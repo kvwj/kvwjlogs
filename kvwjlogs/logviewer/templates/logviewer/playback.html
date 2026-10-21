@@ -1,0 +1,76 @@
+{# logviewer/templates/logviewer/playback.html #}
+{% load django_tables2 %}
+{% load bootstrap3 %}
+<!doctype html>
+<script>
+async function loadAudio(button, url) {
+    try {
+        // Append a timestamp to bust the cache
+        const cacheBustedUrl = `${url}?v=${new Date().getTime()}`;
+        
+        // Perform a lightweight HEAD request to check if the file exists
+        const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
+        
+        if (!response.ok) {
+            const icon = document.createElement('span');
+            icon.innerHTML = ' ❌ File not found';
+            icon.className = 'text-danger';
+            button.parentNode.replaceChild(icon, button);
+            return;
+        }
+        
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.autoplay = true;
+        
+        const source = document.createElement('source');
+        // Use the cache-busted URL for the audio source as well
+        source.src = cacheBustedUrl;
+        source.type = 'audio/mpeg';
+        
+        audio.appendChild(source);
+        button.parentNode.replaceChild(audio, button);
+        
+    } catch (error) {
+        console.error("Error checking audio file:", error);
+    }
+}
+</script>
+<html>
+    <head>
+        <title>List of playbacks</title>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
+    </head>
+    <body>
+        <h3><a href = "/artists?sort=artist">Artist Listing View</a></h3><br/>
+        <h3><a href = "/tracks?sort=artist">Track Listing View</a></h3><br/>
+        <h3><a href = "/?sort=-date&sort=-timestamp">Most Recent Songs Played Sort</a></h3><br/>
+        <h3><a href = "/?sort=artist&sort=track_name&sort=date&sort=timestamp">Artist, Song, Date, Timestamp Sort</a></h3><br/>
+        <h3><a href = "/?sort=category&sort=track_name&sort=date&sort=timestamp">Category, Song Sort</a></h3><br/>
+{% for format in view.export_formats %}
+    <h3><a href="{% export_url format %}">
+        download  <code>.{{ format }}</code>
+    </a></h3><br/>
+{% endfor %}
+{% if filter %}
+    <form action="" method="get" class="form form-inline">
+        {% bootstrap_form filter.form layout='inline' %}
+        {% bootstrap_button 'filter' %}
+    </form>
+{% endif %}
+<div class="row mb-3">
+  <div class="col-md-4">
+    <label>Items per page:</label>
+    <select onchange="window.location.href=this.value" class="form-control" style="width: auto; display: inline-block;">
+      <option value="{% querystring per_page=100 %}" {% if request.GET.per_page == '100' %}selected{% endif %}>100</option>
+      <option value="{% querystring per_page=250 %}" {% if request.GET.per_page == '250' %}selected{% endif %}>250</option>
+      <option value="{% querystring per_page=500 %}" {% if request.GET.per_page == '500' %}selected{% endif %}>500</option>
+      <option value="{% querystring per_page=1000 %}" {% if request.GET.per_page == '1000' %}selected{% endif %}>1000</option>
+      <option value="{% querystring per_page=12000 %}" {% if request.GET.per_page == '12000' %}selected{% endif %}>All</option>
+    </select>
+  </div>
+</div>
+{% render_table table 'django_tables2/bootstrap.html' %}
+    </body>
+</html>
+

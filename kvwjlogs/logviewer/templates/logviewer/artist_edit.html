@@ -1,0 +1,49 @@
+{# logviewer/templates/logviewer/artist_edit.html #}
+{% load form_extras %}
+<!doctype html>
+<html>
+  <head>
+    <title>Edit artist</title>
+    <link rel="stylesheet"
+          href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
+    <style>
+      .form-compact .form-group { margin-bottom: 5px; }
+      .form-compact label { font-size: 12px; font-weight: normal; }
+      .form-compact .form-control { font-size: 13px; padding: 3px 6px; height: 28px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1 class="page-header">Edit artist</h1>
+
+      <div class="panel panel-default">
+        <div class="panel-heading">
+          <strong>Artist:</strong> {{ artist.display_name }}
+        </div>
+        <div class="panel-body">
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.GET.next }}">
+            <div class="row">
+              <div class="col-sm-6">
+                <fieldset class="form-compact">
+                  <legend>Artist</legend>
+                  <div class="form-inline">
+                    <label class="sr-only">Display Name:</label>
+                    {{ artist_form.artist_display_name|add_class:"form-control" }}
+                    <span class="text-muted">← {{ artist_form.artist_name.value }}</span>
+                  </div>
+                </fieldset>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <button type="submit" class="btn btn-primary btn-sm">Save</button>
+              <a href="{{ request.GET.next|default:request.path }}" class="btn btn-default btn-sm">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

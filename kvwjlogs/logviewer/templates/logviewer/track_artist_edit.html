@@ -1,0 +1,126 @@
+{# logviewer/templates/logviewer/track_artist_edit.html #}
+{% load form_extras %}
+<!doctype html>
+<html>
+  <head>
+    <title>Edit track and artist</title>
+    <link rel="stylesheet"
+          href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
+    <style>
+      .form-compact .form-group { margin-bottom: 5px; }
+      .form-compact label { font-size: 12px; font-weight: normal; }
+      .form-compact .form-control { font-size: 13px; padding: 3px 6px; height: 28px; }
+      .audio-preview { margin-top: 15px; padding: 10px; background-color: #f9f9f9; border: 1px solid #e3e3e3; border-radius: 4px; }
+      .audio-row { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1 class="page-header">Edit track &amp; artist</h1>
+
+      <div class="panel panel-default">
+        <div class="panel-heading">
+          <strong>Track:</strong> {{ track.display_name }}<br>
+          <strong>Artist:</strong> {{ artist.display_name }}
+        </div>
+        <div class="panel-body">
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.GET.next }}">
+            <div class="row">
+              <div class="col-sm-6">
+                <fieldset class="form-compact">
+                  <legend>Track</legend>
+                  <div class="form-inline">
+                    <label class="sr-only">Display Name:</label>
+                    {{ track_form.track_display_name|add_class:"form-control" }}
+                    <span class="text-muted">← {{ track_form.track_name.value }}</span>
+                  </div>
+                </fieldset>
+              </div>
+
+              <div class="col-sm-6">
+                <fieldset class="form-compact">
+                  <legend>Artist</legend>
+                  <div class="form-inline">
+                    <label class="sr-only">Display Name:</label>
+                    {{ artist_form.artist_display_name|add_class:"form-control" }}
+                    <span class="text-muted">← {{ artist_form.artist_name.value }}</span>
+                  </div>
+                </fieldset>
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-top: 15px;">
+              <button type="submit" class="btn btn-primary btn-sm">Save</button>
+              <a href="{{ request.GET.next|default:request.path }}" class="btn btn-default btn-sm">Cancel</a>
+            </div>
+          </form>
+
+          <hr>
+
+          <!-- Audio Preview & Regeneration Section -->
+          <div class="audio-preview">
+            <h4>Audio Announcements</h4>
+            
+            <div class="audio-row">
+              <strong>Announcement 1:</strong> 
+              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-1~0.mp3')">Play</button>
+              <form method="post" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" name="regenerate_audio_1" class="btn btn-xs btn-warning">Regenerate</button>
+              </form>
+            </div>
+            
+            <div class="audio-row">
+              <strong>Announcement 2:</strong> 
+              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-2~0.mp3')">Play</button>
+              <form method="post" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" name="regenerate_audio_2" class="btn btn-xs btn-warning">Regenerate</button>
+              </form>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <script>
+    async function loadAudio(button, url) {
+        try {
+            // Append a timestamp to bust the cache
+            const cacheBustedUrl = `${url}?v=${new Date().getTime()}`;
+            
+            // Perform a lightweight HEAD request to check if the file exists
+            const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
+            
+            if (!response.ok) {
+                const icon = document.createElement('span');
+                icon.innerHTML = ' ❌ File not found';
+                icon.className = 'text-danger';
+                button.parentNode.replaceChild(icon, button);
+                return;
+            }
+            
+            const audio = document.createElement('audio');
+            audio.controls = true;
+            audio.autoplay = true;
+            
+            const source = document.createElement('source');
+            // Use the cache-busted URL for the audio source as well
+            source.src = cacheBustedUrl;
+            source.type = 'audio/mpeg';
+            
+            audio.appendChild(source);
+            button.parentNode.replaceChild(audio, button);
+            
+        } catch (error) {
+            console.error("Error checking audio file:", error);
+        }
+    }
+    </script>
+
+  </body>
+</html>

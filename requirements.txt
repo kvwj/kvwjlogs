@@ -1,0 +1,8 @@
+django-tables2
+django-bootstrap3
+django-filter
+tablib
+gunicorn
+requests
+psycopg2-binary
+openai

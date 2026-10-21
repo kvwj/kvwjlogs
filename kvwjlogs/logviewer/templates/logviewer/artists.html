@@ -1,0 +1,30 @@
+{# logviewer/templates/logviewer/artists.html #}
+{% load django_tables2 %}
+{% load bootstrap3 %}
+<!doctype html>
+<html>
+    <head>
+        <title>List of artists</title>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
+    </head>
+    <body>
+        <h3><a href = "/artists?sort=artist">Artist Listing View</a></h3><br/>
+        <h3><a href = "/tracks?sort=artist">Track Listing View</a></h3><br/>
+        <h3><a href = "/?sort=-date&sort=-timestamp">Most Recent Songs Played Sort</a></h3><br/>
+        <h3><a href = "/?sort=artist&sort=track_name&sort=date&sort=timestamp">Artist, Song, Date, Timestamp Sort</a></h3><br/>
+        <h3><a href = "/?sort=category&sort=track_name&sort=date&sort=timestamp">Category, Song Sort</a></h3><br/>
+{% for format in view.export_formats %}
+    <h3><a href="{% export_url format %}">
+        download  <code>.{{ format }}</code>
+    </a></h3><br/>
+{% endfor %}
+{% if filter %}
+    <form action="" method="get" class="form form-inline">
+        {% bootstrap_form filter.form layout='inline' %}
+        {% bootstrap_button 'filter' %}
+    </form>
+{% endif %}
+{% render_table table 'django_tables2/bootstrap.html' %}
+    </body>
+</html>
+
