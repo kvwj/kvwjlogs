@@ -1,5 +1,7 @@
 {# logviewer/templates/logviewer/artist_edit.html #}
 {% load form_extras %}
+{% load django_tables2 %}
+{% load bootstrap3 %}
 <!doctype html>
 <html>
   <head>
@@ -14,6 +16,7 @@
   </head>
   <body>
     <div class="container">
+      <h3><a href = "/?sort=-date&sort=-timestamp">Home</a></h3><br/>
       <h1 class="page-header">Edit artist</h1>
 
       <div class="panel panel-default">
@@ -44,6 +47,151 @@
           </form>
         </div>
       </div>
+      <h2>Tracks by {{ artist.display_name }}</h2>
+
+      {% render_table tracks_table %}
+    <form id="regenerate-form"
+      data-start-url="{% url 'regenerate-artist-audio-start' artist.pk %}"
+      method="post">
+    {% csrf_token %}
+    <button type="submit" id="regenerate-button">
+        Regenerate All Audio
+    </button>
+    </form>
+
+<div id="progress-area" hidden>
+    <p id="progress-message">Starting...</p>
+
+    <progress id="progress-bar" value="0" max="100"></progress>
+
+    <ul id="track-statuses"></ul>
+</div>
     </div>
+
+    <script>
+    async function loadAudio(button, url) {
+        try {
+            // Append a timestamp to bust the cache
+            const cacheBustedUrl = `${url}?v=${new Date().getTime()}`;
+            
+            // Perform a lightweight HEAD request to check if the file exists
+            const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
+            
+            if (!response.ok) {
+                const icon = document.createElement('span');
+                icon.innerHTML = ' ❌ File not found';
+                icon.className = 'text-danger';
+                button.parentNode.replaceChild(icon, button);
+                return;
+            }
+            
+            const audio = document.createElement('audio');
+            audio.controls = true;
+            audio.autoplay = true;
+            
+            const source = document.createElement('source');
+            // Use the cache-busted URL for the audio source as well
+            source.src = cacheBustedUrl;
+            source.type = 'audio/mpeg';
+            
+            audio.appendChild(source);
+            button.parentNode.replaceChild(audio, button);
+            
+        } catch (error) {
+            console.error("Error checking audio file:", error);
+        }
+    }
+    </script>
+    <script>
+      const form = document.getElementById("regenerate-form");
+      const button = document.getElementById("regenerate-button");
+      const area = document.getElementById("progress-area");
+      const message = document.getElementById("progress-message");
+      const bar = document.getElementById("progress-bar");
+      const statuses = document.getElementById("track-statuses");
+
+      form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+
+          button.disabled = true;
+          area.hidden = false;
+          message.textContent = "Starting regeneration...";
+
+          try {
+              const response = await fetch(form.dataset.startUrl, {
+                  method: "POST",
+                  headers: {
+                      "X-CSRFToken": form.querySelector(
+                          "[name=csrfmiddlewaretoken]"
+                      ).value,
+                  },
+              });
+
+              if (!response.ok) {
+                  throw new Error("Could not start regeneration.");
+              }
+
+              const { task_id } = await response.json();
+
+              await pollProgress(task_id);
+          } catch (error) {
+              message.textContent = error.message;
+              button.disabled = false;
+          }
+      });
+
+      async function pollProgress(taskId) {
+          const statusUrl =
+              `/audio-regeneration/${encodeURIComponent(taskId)}/`;
+
+          while (true) {
+              const response = await fetch(statusUrl);
+
+              if (!response.ok) {
+                  throw new Error("Could not retrieve progress.");
+              }
+
+              const data = await response.json();
+
+              if (data.state === "PROGRESS" || data.state === "SUCCESS") {
+                  const total = data.total || 0;
+                  const completed = data.completed || 0;
+                  const percent = total
+                      ? Math.round(completed / total * 100)
+                      : 0;
+
+                  bar.value = percent;
+                  message.textContent =
+                      `${completed} of ${total} announcements processed`;
+
+                  if (data.tracks) {
+                      statuses.replaceChildren();
+
+                      for (const track of Object.values(data.tracks)) {
+                          const item = document.createElement("li");
+                          item.textContent =
+                              `${track.name}: ${track.status} ` +
+                              `(${track.completed}/2 announcements)`;
+                          statuses.appendChild(item);
+                      }
+                  }
+              }
+
+              if (data.state === "SUCCESS") {
+                  message.textContent = "Regeneration finished.";
+                  button.disabled = false;
+                  return;
+              }
+
+              if (data.state === "FAILURE") {
+                  message.textContent = data.error || "Regeneration failed.";
+                  button.disabled = false;
+                  return;
+              }
+
+              await new Promise(resolve => setTimeout(resolve, 1500));
+          }
+      }
+    </script>
   </body>
 </html>

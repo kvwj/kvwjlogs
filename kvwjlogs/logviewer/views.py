@@ -2,7 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 
 
 #def index(request):
@@ -17,106 +17,123 @@ from django.db import IntegrityError
 from .models import Playback, Track, Artist
 from .forms import TrackDisplayForm, ArtistDisplayForm
 from .tables import PlaybackTable, TracksTable, ArtistsTable
+from .audio import regenerate_audio
+from .tasks import regenerate_artist_audio, regenerate_single_audio
+from .filters import ArtistFilter, TrackFilter, PlaybackFilter
 
 import django_filters
 from django_filters.views import FilterView
 from django_tables2.views import SingleTableMixin
 from django_tables2.export.views import ExportMixin
 from django_tables2.paginators import LazyPaginator
+from django.views.decorators.http import require_GET, require_POST
+from django.db import models
+from django.db.models import Value
+from django.db.models.functions import Coalesce, NullIf
 
 from django_filters import FilterSet
+
+from celery.result import AsyncResult
+from kvwjlogs.celery import app
 
 fourweeksago = datetime.now() - timedelta(days=29)
 fourweeksago_str = fourweeksago.strftime('%Y-%m-%d')
 
-class PlaybackFilter(django_filters.FilterSet):
-    category = django_filters.CharFilter(
-        field_name="trackid__categoryid__category",
-        lookup_expr="icontains",
-        label="Category",  # <- clean label
-    )
-    artist = django_filters.CharFilter(
-        field_name="trackid__artistid__artist_name",
-        lookup_expr="icontains",
-        label="Artist",
-    )
-    track_name = django_filters.CharFilter(
-        field_name="trackid__track_name",
-        lookup_expr="icontains",
-        label="Track Name",
-    )
-    year = django_filters.CharFilter(
-        field_name="trackid__yearid__year",
-        lookup_expr="icontains",
-        label="Year",
-    )
-    date = django_filters.CharFilter(
-        field_name="date",
-        lookup_expr="contains",
-        label="Date",
-    )
 
-    class Meta:
-        model = Playback
-        fields = ["category", "artist", "track_name", "year", "date"]
+@require_POST
+def start_single_audio(request, pk, num):
+    track = get_object_or_404(Track, pk=pk)
 
-class TrackFilter(django_filters.FilterSet):
-    category = django_filters.CharFilter(
-        field_name="categoryid__category",
-        lookup_expr="icontains",
-        label="Category",  # <- clean label
-    )
-    artist = django_filters.CharFilter(
-        field_name="artistid__artist_name",
-        lookup_expr="icontains",
-        label="Artist",
-    )
-    track_name = django_filters.CharFilter(
-        field_name="track_name",
-        lookup_expr="icontains",
-        label="Track Name",
-    )
-    year = django_filters.CharFilter(
-        field_name="yearid__year",
-        lookup_expr="icontains",
-        label="Year",
-    )
+    if num not in (1, 2):
+        return JsonResponse(
+            {"error": "Invalid announcement number."},
+            status=400,
+        )
 
-    class Meta:
-        model = Track
-        fields = ["category", "artist", "track_name", "year"]
+    task = regenerate_single_audio.delay(track.pk, num)
 
-class ArtistFilter(django_filters.FilterSet):
-    artist = django_filters.CharFilter(
-        field_name="artist_name",
-        lookup_expr="icontains",
-        label="Artist",
-    )
+    return JsonResponse({"task_id": task.id})
 
-    class Meta:
-        model = Artist
-        fields = ["artist"]
+@require_POST
+def regenerate_artist_audio_start(request, pk):
+    artist = get_object_or_404(Artist, pk=pk)
 
+    task = regenerate_artist_audio.delay(artist.pk)
+
+    return JsonResponse({"task_id": task.id})
+
+@require_GET
+def audio_task_status(request, task_id):
+    task = AsyncResult(task_id, app=app)
+
+    response = {
+        "state": task.state,
+    }
+
+    if task.state == "PROGRESS":
+        response["progress"] = task.info
+    elif task.state == "SUCCESS":
+        response["result"] = task.result
+    elif task.state == "FAILURE":
+        response["error"] = str(task.result)
+
+    return JsonResponse(response)
+
+@require_GET
+def regenerate_artist_audio_status(request, task_id):
+    task = AsyncResult(task_id)
+
+    if task.state == "PROGRESS":
+        return JsonResponse({
+            "state": task.state,
+            **task.info,
+        })
+
+    if task.state == "SUCCESS":
+        return JsonResponse({
+            "state": task.state,
+            **task.result,
+        })
+
+    if task.state == "FAILURE":
+        return JsonResponse({
+            "state": task.state,
+            "error": "The regeneration job failed.",
+        })
+
+    return JsonResponse({"state": task.state})
 
 class FilteredPlaybackListView(ExportMixin, SingleTableMixin, FilterView):
     model = Playback
     table_class = PlaybackTable
     template_name = 'logviewer/playback.html'
     filterset_class = PlaybackFilter
+
     table_pagination = {
-    'per_page': 250,  # Adjust as needed
-    'paginator_class': LazyPaginator  # For 12k+ rows
-}
+        'per_page': 250,
+        'paginator_class': LazyPaginator,
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
+
         return qs.select_related(
             "trackid",
             "trackid__artistid",
             "trackid__categoryid",
             "trackid__yearid",
+        ).annotate(
+            artist_sort_name=Coalesce(
+                NullIf(
+                    "trackid__artistid__artist_display_name",
+                    Value("", output_field=models.TextField()),
+                ),
+                "trackid__artistid__artist_name",
+                Value("", output_field=models.TextField()),
+                output_field=models.TextField(),
+            )
         )
-    
+
     def get_table_kwargs(self):
         kwargs = super().get_table_kwargs()
         kwargs["request"] = self.request
@@ -127,60 +144,77 @@ class FilteredTrackListView(ExportMixin, SingleTableMixin, FilterView):
     table_class = TracksTable
     template_name = 'logviewer/tracks.html'
     filterset_class = TrackFilter
+
     table_pagination = {
-    'per_page': 250,  # Adjust as needed
-    'paginator_class': LazyPaginator  # For 12k+ rows
-}
+        'per_page': 250,
+        'paginator_class': LazyPaginator,
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
+
         return qs.select_related(
             "artistid",
             "categoryid",
             "yearid",
+        ).annotate(
+            artist_sort_name=Coalesce(
+                NullIf(
+                    "artistid__artist_display_name",
+                    Value("", output_field=models.TextField()),
+                ),
+                "artistid__artist_name",
+                Value("", output_field=models.TextField()),
+                output_field=models.TextField(),
+            ),
+            track_sort_name=Coalesce(
+                NullIf(
+                    "track_display_name",
+                    Value("", output_field=models.TextField()),
+                ),
+                "track_name",
+                Value("", output_field=models.TextField()),
+                output_field=models.TextField(),
+            ),
         )
-    
+
     def get_table_kwargs(self):
         kwargs = super().get_table_kwargs()
         kwargs["request"] = self.request
         return kwargs
+
+
 
 class FilteredArtistListView(ExportMixin, SingleTableMixin, FilterView):
     model = Artist
     table_class = ArtistsTable
     template_name = 'logviewer/artists.html'
     filterset_class = ArtistFilter
-    table_pagination = {
-    'per_page': 250,  # Adjust as needed
-    'paginator_class': LazyPaginator  # For 12k+ rows
-}
 
-    # def get_queryset(self):
-    #     qs = super().get_queryset()
-    #     return qs.select_related(
-    #         "artistid",
-    #     )
-    
+    table_pagination = {
+        'per_page': 250,
+        'paginator_class': LazyPaginator,
+    }
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+
+        return qs.annotate(
+            artist_sort_name=Coalesce(
+                NullIf(
+                    "artist_display_name",
+                    Value("", output_field=models.TextField()),
+                ),
+                "artist_name",
+                Value("", output_field=models.TextField()),
+                output_field=models.TextField(),
+            )
+        )
+
     def get_table_kwargs(self):
         kwargs = super().get_table_kwargs()
         kwargs["request"] = self.request
         return kwargs
-    
-def regenerate_audio(text, trackid, num):
-    from pathlib import Path
-    from openai import OpenAI
-    client = OpenAI()
-    speech_file_path = Path(str('/mnt/announcements/media')) / Path(str(trackid) + '-' + str(num)+ "~0.mp3")
-
-    with client.audio.speech.with_streaming_response.create(
-        model="gpt-4o-mini-tts",
-        voice="nova",
-        input=text,
-        instructions="Speak with excitement like a radio DJ",
-    ) as response:
-        response.stream_to_file(speech_file_path)
-
-
 
 def track_and_artist_edit(request, pk):
     track = get_object_or_404(Track, pk=pk)
@@ -248,11 +282,25 @@ def track_and_artist_edit(request, pk):
 def artist_edit(request, pk):
     artist = get_object_or_404(Artist, pk=pk)
 
+    tracks_list = artist.track_set.all()
+    tracks_table = TracksTable(tracks_list)
+
+    regenerate_all_clicked = "regenerate_all_audio" in request.POST
+
     artist_changed = "artist_display_name" in request.POST
 
     artist_saved = False
 
     if request.method == "POST":
+        if regenerate_all_clicked:
+            for track in tracks_list:
+                text = artist.display_name + ' with ' + track.display_name + ' on J-95!'
+                num = 1
+                regenerate_audio(text, track.id, num)
+                text = track.display_name + ", that's "  + artist.display_name + ' on K-V-W-J!'
+                num = 2
+                regenerate_audio(text, track.id, num)
+            return redirect(request.path_info)
         if artist_changed:
             artist_form = ArtistDisplayForm(request.POST, instance=artist)
             if artist_form.is_valid():
@@ -276,6 +324,7 @@ def artist_edit(request, pk):
         {
             "artist": artist,
             "artist_form": artist_form,
+            "tracks_table": tracks_table
         },
     )
 

@@ -16,10 +16,12 @@
   </head>
   <body>
     <div class="container">
+      <h3><a href = "/?sort=-date&sort=-timestamp">Home</a></h3><br/>
       <h1 class="page-header">Edit track &amp; artist</h1>
 
       <div class="panel panel-default">
         <div class="panel-heading">
+          <strong>Track ID:</strong> {{ track.id }}<br>
           <strong>Track:</strong> {{ track.display_name }}<br>
           <strong>Artist:</strong> {{ artist.display_name }}
         </div>
@@ -68,7 +70,15 @@
               <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-1~0.mp3')">Play</button>
               <form method="post" style="display:inline;">
                 {% csrf_token %}
-                <button type="submit" name="regenerate_audio_1" class="btn btn-xs btn-warning">Regenerate</button>
+                <div class="announcement">
+                <button
+                    type="button"
+                    class="generate-audio-button"
+                    data-url="{% url 'start-single-audio' track.pk 1 %}">
+                    Regenerate
+                </button>
+                <span class="audio-status" role="status"></span>
+                </div>
               </form>
             </div>
             
@@ -77,10 +87,17 @@
               <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-2~0.mp3')">Play</button>
               <form method="post" style="display:inline;">
                 {% csrf_token %}
-                <button type="submit" name="regenerate_audio_2" class="btn btn-xs btn-warning">Regenerate</button>
+                <div class="announcement">
+                <button
+                    type="button"
+                    class="generate-audio-button"
+                    data-url="{% url 'start-single-audio' track.pk 2 %}">
+                    Regenerate
+                </button>
+                <span class="audio-status" role="status"></span>
+                </div>
               </form>
             </div>
-
           </div>
 
         </div>
@@ -121,6 +138,66 @@
         }
     }
     </script>
+    <script>
+    document.querySelectorAll(".generate-audio-button").forEach(button => {
+        button.addEventListener("click", async () => {
+            const status = button.parentElement.querySelector(".audio-status");
 
+            button.disabled = true;
+            status.textContent = "Queueing audio generation...";
+
+            try {
+                const response = await fetch(button.dataset.url, {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": "{{ csrf_token }}",
+                        "X-Requested-With": "XMLHttpRequest"
+                    }
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(
+                        data.error || "Could not queue audio generation."
+                    );
+                }
+
+                const statusUrl =
+                    "{% url 'audio-task-status' 'TASK_ID' %}"
+                        .replace("TASK_ID", encodeURIComponent(data.task_id));
+
+                status.textContent = "Audio generation queued...";
+
+                while (true) {
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+
+                    const statusResponse = await fetch(statusUrl);
+
+                    if (!statusResponse.ok) {
+                        throw new Error("Could not retrieve task status.");
+                    }
+
+                    const task = await statusResponse.json();
+
+                    if (task.state === "PROGRESS") {
+                        const progress = task.progress || {};
+                        status.textContent =
+                            `Generating announcement ${progress.announcement || ""}...`;
+                    } else if (task.state === "SUCCESS") {
+                        status.textContent = "Complete!";
+                        break;
+                    } else if (task.state === "FAILURE") {
+                        throw new Error(task.error || "Audio generation failed.");
+                    }
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+            } finally {
+                button.disabled = false;
+            }
+        });
+    });
+    </script>
   </body>
 </html>
