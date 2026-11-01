@@ -1,13 +1,17 @@
+{% extends "logviewer/base.html" %}
 {# logviewer/templates/logviewer/artist_edit.html #}
-{% load form_extras %}
+
+{% block title %}Edit KVWJ Artist{% endblock %}
+
+{% block content %}
+
+   {% load form_extras %}
 {% load django_tables2 %}
-{% load bootstrap3 %}
+{% load django_bootstrap5 %}
 <!doctype html>
 <html>
   <head>
     <title>Edit artist</title>
-    <link rel="stylesheet"
-          href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
     <style>
       .form-compact .form-group { margin-bottom: 5px; }
       .form-compact label { font-size: 12px; font-weight: normal; }
@@ -16,7 +20,6 @@
   </head>
   <body>
     <div class="container">
-      <h3><a href = "/?sort=-date&sort=-timestamp">Home</a></h3><br/>
       <h1 class="page-header">Edit artist</h1>
 
       <div class="panel panel-default">
@@ -30,7 +33,6 @@
             <div class="row">
               <div class="col-sm-6">
                 <fieldset class="form-compact">
-                  <legend>Artist</legend>
                   <div class="form-inline">
                     <label class="sr-only">Display Name:</label>
                     {{ artist_form.artist_display_name|add_class:"form-control" }}
@@ -54,7 +56,7 @@
       data-start-url="{% url 'regenerate-artist-audio-start' artist.pk %}"
       method="post">
     {% csrf_token %}
-    <button type="submit" id="regenerate-button">
+    <button class="btn btn-xs btn-info" type="submit" id="regenerate-button">
         Regenerate All Audio
     </button>
     </form>
@@ -67,6 +69,12 @@
     <ul id="track-statuses"></ul>
 </div>
     </div>
+  </body>
+</html>
+
+{% endblock %}
+
+{% block scripts %}
 
     <script>
     async function loadAudio(button, url) {
@@ -193,5 +201,4 @@
           }
       }
     </script>
-  </body>
-</html>
+{% endblock %}

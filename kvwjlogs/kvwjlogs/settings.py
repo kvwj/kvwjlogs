@@ -38,7 +38,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
-    'bootstrap3',
+    'django_bootstrap5',
     'django_tables2',
     'django_filters',
     'logviewer.apps.LogviewerConfig',

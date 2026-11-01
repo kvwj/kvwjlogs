@@ -1,5 +1,5 @@
 django-tables2
-django-bootstrap3
+django-bootstrap5
 django-filter
 tablib
 gunicorn

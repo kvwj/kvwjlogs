@@ -1,0 +1,27 @@
+{% extends "logviewer/base.html" %}
+{% load django_tables2 %}
+{% load django_bootstrap5 %}
+
+{% block title %}KVWJ Scan Log{% endblock %}
+
+{% block content %}
+    <h1>Scan Log</h1>
+
+    <div class="row mb-3">
+        <div class="col-md-4">
+            <label for="per-page">Items per page:</label>
+            <select id="per-page"
+                    onchange="changePerPage(this.value)"
+                    class="form-select"
+                    style="width: auto; display: inline-block;">
+                <option value="100" {% if request.GET.per_page == '100' %}selected{% endif %}>100</option>
+                <option value="250" {% if request.GET.per_page == '250' or not request.GET.per_page %}selected{% endif %}>250</option>
+                <option value="500" {% if request.GET.per_page == '500' %}selected{% endif %}>500</option>
+                <option value="1000" {% if request.GET.per_page == '1000' %}selected{% endif %}>1000</option>
+                <option value="12000" {% if request.GET.per_page == '12000' %}selected{% endif %}>All</option>
+            </select>
+        </div>
+    </div>
+
+    {% render_table table %}
+{% endblock %}

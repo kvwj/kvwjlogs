@@ -14,9 +14,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.db import IntegrityError
 
-from .models import Playback, Track, Artist
+from .models import Playback, Track, Artist, Log
 from .forms import TrackDisplayForm, ArtistDisplayForm
-from .tables import PlaybackTable, TracksTable, ArtistsTable
+from .tables import PlaybackTable, TracksTable, ArtistsTable, LogTable
 from .audio import regenerate_audio
 from .tasks import regenerate_artist_audio, regenerate_single_audio
 from .filters import ArtistFilter, TrackFilter, PlaybackFilter
@@ -24,6 +24,7 @@ from .filters import ArtistFilter, TrackFilter, PlaybackFilter
 import django_filters
 from django_filters.views import FilterView
 from django_tables2.views import SingleTableMixin
+from django.views.generic import TemplateView
 from django_tables2.export.views import ExportMixin
 from django_tables2.paginators import LazyPaginator
 from django.views.decorators.http import require_GET, require_POST
@@ -103,11 +104,30 @@ def regenerate_artist_audio_status(request, task_id):
 
     return JsonResponse({"state": task.state})
 
-class FilteredPlaybackListView(ExportMixin, SingleTableMixin, FilterView):
+class PerPageMixin:
+    page_sizes = {
+        "100": 100,
+        "250": 250,
+        "500": 500,
+        "1000": 1000,
+        "12000": 12000,
+    }
+
+    def get_table_pagination(self, table):
+        pagination = super().get_table_pagination(table).copy()
+
+        requested = self.request.GET.get("per_page", "250")
+        pagination["per_page"] = self.page_sizes.get(requested, 250)
+
+        return pagination
+
+class FilteredPlaybackListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterView):
     model = Playback
     table_class = PlaybackTable
     template_name = 'logviewer/playback.html'
     filterset_class = PlaybackFilter
+
+    exclude_columns = ("announcement_1", "announcement_2")
 
     table_pagination = {
         'per_page': 250,
@@ -132,14 +152,14 @@ class FilteredPlaybackListView(ExportMixin, SingleTableMixin, FilterView):
                 Value("", output_field=models.TextField()),
                 output_field=models.TextField(),
             )
-        )
+        ).order_by("-date", "-timestamp")
 
     def get_table_kwargs(self):
         kwargs = super().get_table_kwargs()
         kwargs["request"] = self.request
         return kwargs
     
-class FilteredTrackListView(ExportMixin, SingleTableMixin, FilterView):
+class FilteredTrackListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterView):
     model = Track
     table_class = TracksTable
     template_name = 'logviewer/tracks.html'
@@ -183,9 +203,7 @@ class FilteredTrackListView(ExportMixin, SingleTableMixin, FilterView):
         kwargs["request"] = self.request
         return kwargs
 
-
-
-class FilteredArtistListView(ExportMixin, SingleTableMixin, FilterView):
+class FilteredArtistListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterView):
     model = Artist
     table_class = ArtistsTable
     template_name = 'logviewer/artists.html'
@@ -209,7 +227,28 @@ class FilteredArtistListView(ExportMixin, SingleTableMixin, FilterView):
                 Value("", output_field=models.TextField()),
                 output_field=models.TextField(),
             )
-        )
+        ).order_by("artist_sort_name")
+
+    def get_table_kwargs(self):
+        kwargs = super().get_table_kwargs()
+        kwargs["request"] = self.request
+        return kwargs
+
+class FilteredLogListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterView):
+    model = Log
+    table_class = LogTable
+    template_name = 'logviewer/log.html'
+
+    table_pagination = {
+        'per_page': 250,
+        'paginator_class': LazyPaginator,
+    }
+
+    def get_queryset(self):
+        return super().get_queryset().select_related(
+            "trackid",
+            "trackid__artistid",
+        ).order_by("-date", "-timestamp")
 
     def get_table_kwargs(self):
         kwargs = super().get_table_kwargs()

@@ -63,3 +63,23 @@ class Playback(models.Model):
     class Meta:
         managed = False
         db_table = 'playback'
+
+class Log(models.Model):
+    id = models.AutoField(primary_key=True)
+
+    trackid = models.ForeignKey(
+        Track,
+        db_column="trackid",
+        on_delete=models.DO_NOTHING,
+        null=True,
+    )
+
+    date = models.TextField()
+    timestamp = models.TextField()
+
+    class Meta:
+        managed = False
+        db_table = "log"
+
+    def __str__(self):
+        return f"{self.date} {self.timestamp}"

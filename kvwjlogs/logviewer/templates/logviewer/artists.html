@@ -1,30 +1,47 @@
-{# logviewer/templates/logviewer/artists.html #}
+{% extends "logviewer/base.html" %}
 {% load django_tables2 %}
-{% load bootstrap3 %}
-<!doctype html>
-<html>
-    <head>
-        <title>List of artists</title>
-        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" />
-    </head>
-    <body>
-        <h3><a href = "/artists?sort=artist">Artist Listing View</a></h3><br/>
-        <h3><a href = "/tracks?sort=artist">Track Listing View</a></h3><br/>
-        <h3><a href = "/?sort=-date&sort=-timestamp">Most Recent Songs Played Sort</a></h3><br/>
-        <h3><a href = "/?sort=artist&sort=track_name&sort=date&sort=timestamp">Artist, Song, Date, Timestamp Sort</a></h3><br/>
-        <h3><a href = "/?sort=category&sort=track_name&sort=date&sort=timestamp">Category, Song Sort</a></h3><br/>
-{% for format in view.export_formats %}
-    <h3><a href="{% export_url format %}">
-        download  <code>.{{ format }}</code>
-    </a></h3><br/>
-{% endfor %}
-{% if filter %}
-    <form action="" method="get" class="form form-inline">
-        {% bootstrap_form filter.form layout='inline' %}
-        {% bootstrap_button 'filter' %}
-    </form>
-{% endif %}
-{% render_table table 'django_tables2/bootstrap.html' %}
-    </body>
-</html>
+{% load django_bootstrap5 %}
 
+{% block title %}KVWJ Artists{% endblock %}
+
+{% block content %}
+    <h1>Artists</h1>
+
+    {% if filter %}
+        <form action="" method="get" class="mb-3">
+            <div class="row g-2 align-items-end">
+
+                <div class="col-md-4">
+                    {% bootstrap_field filter.form.artist show_label=False %}
+                </div>
+
+                <div class="col-md-1">
+                    <button type="submit" class="btn btn-primary w-100 mb-3">
+                        Filter
+                    </button>
+                </div>
+
+            </div>
+        </form>
+    {% endif %}
+
+        <div class="row mb-3">
+        <div class="col-md-4">
+            <label for="per-page">Items per page:</label>
+            <select id="per-page"
+                    onchange="changePerPage(this.value)"
+                    class="form-select"
+                    style="width: auto; display: inline-block;">
+                <option value="100" {% if request.GET.per_page == '100' %}selected{% endif %}>100</option>
+                <option value="250" {% if request.GET.per_page == '250' or not request.GET.per_page %}selected{% endif %}>250</option>
+                <option value="500" {% if request.GET.per_page == '500' %}selected{% endif %}>500</option>
+                <option value="1000" {% if request.GET.per_page == '1000' %}selected{% endif %}>1000</option>
+                <option value="12000" {% if request.GET.per_page == '12000' %}selected{% endif %}>All</option>
+            </select>
+        </div>
+    </div>
+
+    {% render_table table %}
+{% endblock %}
+{% block scripts %}
+{% endblock %}

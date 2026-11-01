@@ -1,7 +1,7 @@
 # tutorial/tables.py
 from django_tables2.utils import A
 import django_tables2 as tables
-from .models import Playback, Track, Artist
+from .models import Playback, Track, Artist, Log
 from django.urls import reverse
 from django.utils.http import urlencode
 from django.utils.html import format_html
@@ -74,7 +74,8 @@ class PlaybackTable(tables.Table):
         track_id = record.trackid.pk
         url = f"/media/{track_id}-1~0.mp3"
         return format_html(
-            '<button class="play-btn" onclick="loadAudio(this, \'{}\')">Play</button>',
+            '<button type="button" class="btn btn-light btn-sm play-btn" '
+            'onclick="loadAudio(this, \'{}\')">Play</button>',
             url
             )
 
@@ -82,9 +83,19 @@ class PlaybackTable(tables.Table):
         track_id = record.trackid.pk
         url = f"/media/{track_id}-2~0.mp3"
         return format_html(
-            '<button class="play-btn" onclick="loadAudio(this, \'{}\')">Play</button>',
+            '<button type="button" class="btn btn-light btn-sm play-btn" '
+            'onclick="loadAudio(this, \'{}\')">Play</button>',
             url
             )
+
+    def value_artist(self, record):
+        artist = record.trackid.artistid
+        return artist.display_name if artist else "—"
+
+
+    def value_track_name(self, record):
+        track = record.trackid
+        return track.display_name if track else "—"
 
     class Meta:
         model = Playback
@@ -157,22 +168,36 @@ class TracksTable(tables.Table):
     def render_announcement_1(self, record):
         track_id = record.pk
         url = f"/media/{track_id}-1~0.mp3"
+
         return format_html(
-            '<button class="play-btn" onclick="loadAudio(this, \'{}\')">Play</button>',
-            url
-            )
+            '<button type="button" class="btn btn-light btn-sm play-btn" '
+            'onclick="loadAudio(this, \'{}\')">Play</button>',
+            url,
+        )
 
     def render_announcement_2(self, record):
         track_id = record.pk
         url = f"/media/{track_id}-2~0.mp3"
+
         return format_html(
-            '<button class="play-btn" onclick="loadAudio(this, \'{}\')">Play</button>',
-            url
-            )
+            '<button type="button" class="btn btn-light btn-sm play-btn" '
+            'onclick="loadAudio(this, \'{}\')">Play</button>',
+            url,
+        )
 
     class Meta:
         model = Track
-        fields = ("category", "artist", "track_name", "year", "announcement_1", "announcement_2")
+        fields = (
+            "category",
+            "artist",
+            "track_name",
+            "year",
+            "announcement_1",
+            "announcement_2",
+        )
+        attrs = {
+            "class": "table table-sm table-hover",
+        }
 
 
 
@@ -199,5 +224,69 @@ class ArtistsTable(tables.Table):
     class Meta:
         model = Artist
         fields = ("artist",)
+
+class LogTable(tables.Table):
+    artist = tables.Column(
+        accessor="trackid__artistid__display_name",
+        verbose_name="Artist",
+    )
+
+    track = tables.Column(
+        accessor="trackid__display_name",
+        verbose_name="Track",
+    )
+
+    date = tables.Column()
+    timestamp = tables.Column()
+
+    class Meta:
+        model = Log
+        fields = ("date", "timestamp", "artist", "track")
+        attrs = {"class": "table table-sm table-hover"}
+
+    def render_artist(self, record):
+        artist = record.trackid.artistid if record.trackid else None
+
+        if not artist:
+            return "—"
+
+        url = reverse("artist-edit", args=[artist.pk])
+
+        if hasattr(self, "request") and self.request:
+            query = urlencode({"next": self.request.get_full_path()})
+            url = f"{url}?{query}"
+
+        return format_html(
+            '<a href="{}">{}</a>',
+            url,
+            artist.display_name or "—",
+        )
+
+    def render_track(self, record):
+        track = record.trackid
+
+        if not track:
+            return "—"
+
+        url = reverse("track-artist-edit", args=[track.pk])
+
+        if hasattr(self, "request") and self.request:
+            query = urlencode({"next": self.request.get_full_path()})
+            url = f"{url}?{query}"
+
+        return format_html(
+            '<a href="{}">{}</a>',
+            url,
+            track.display_name or "—",
+        )
+
+    def value_artist(self, record):
+        artist = record.trackid.artistid if record.trackid else None
+        return artist.display_name if artist else "—"
+
+
+    def value_track(self, record):
+        track = record.trackid
+        return track.display_name if track else "—"
 
 
