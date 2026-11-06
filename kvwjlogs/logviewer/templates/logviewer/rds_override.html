@@ -1,0 +1,102 @@
+{% extends "logviewer/base.html" %}
+
+{% block title %}RDS Override{% endblock %}
+
+{% block content %}
+    <h1>RDS Override</h1>
+
+    <section class="mb-4" aria-labelledby="current-display-heading">
+        <h2 id="current-display-heading" class="h4">Currently displaying</h2>
+        <p id="rds-current-text" class="mb-1">{{ state.current_text|default:"No display text reported yet." }}</p>
+        <p class="form-text">Display status is updated by the RDS listener.</p>
+        <p id="rds-override-status" class="text-muted mb-0">
+            {% if state.override_text %}
+                Override active {{ state.get_override_lifetime_display|lower }}:
+                {{ state.override_text }}
+            {% else %}
+                No override active.
+            {% endif %}
+        </p>
+        <p id="rds-status-error" class="text-danger" role="status"></p>
+    </section>
+
+    <form method="post" class="mb-4">
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+            <div class="alert alert-danger" role="alert">
+                {{ form.non_field_errors }}
+            </div>
+        {% endif %}
+
+        <div class="mb-3">
+            <label for="{{ form.text.id_for_label }}" class="form-label">
+                {{ form.text.label }}
+            </label>
+            {{ form.text }}
+            {% for error in form.text.errors %}
+                <div class="text-danger">{{ error }}</div>
+            {% endfor %}
+            <div class="form-text">The RDS display supports up to 64 characters.</div>
+        </div>
+
+        <fieldset class="mb-3">
+            <legend class="col-form-label pt-0">{{ form.lifetime.label }}</legend>
+            {% for radio in form.lifetime %}
+                <div class="form-check">
+                    {{ radio.tag }}
+                    <label class="form-check-label" for="{{ radio.id_for_label }}">
+                        {{ radio.choice_label }}
+                    </label>
+                </div>
+            {% endfor %}
+            {% for error in form.lifetime.errors %}
+                <div class="text-danger">{{ error }}</div>
+            {% endfor %}
+        </fieldset>
+
+        <button type="submit" name="action" value="set" class="btn btn-primary">
+            Set override
+        </button>
+    </form>
+
+    {% if state.override_text %}
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" name="action" value="clear" class="btn btn-outline-secondary">
+                Clear override
+            </button>
+        </form>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function refreshRdsStatus() {
+        const errorElement = document.getElementById("rds-status-error");
+        try {
+            const response = await fetch("{% url 'rds-display-status' %}");
+            if (!response.ok) {
+                throw new Error(`Status request failed: ${response.status}`);
+            }
+
+            const status = await response.json();
+            document.getElementById("rds-current-text").textContent =
+                status.current_text || "No display text reported yet.";
+            document.getElementById("rds-override-status").textContent =
+                status.override_text
+                    ? `Override active ${
+                        status.override_lifetime === "until_cleared"
+                            ? "until cleared"
+                            : "until the next playback update"
+                    }: ${status.override_text}`
+                    : "No override active.";
+            errorElement.textContent = "";
+        } catch (error) {
+            errorElement.textContent = "Could not refresh the RDS display status.";
+            console.error("Could not refresh RDS display status:", error);
+        }
+    }
+
+    window.setInterval(refreshRdsStatus, 5000);
+</script>
+{% endblock %}

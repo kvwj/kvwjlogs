@@ -14,8 +14,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.db import IntegrityError
 
-from .models import Playback, Track, Artist, Log
-from .forms import TrackDisplayForm, ArtistDisplayForm
+from .models import Playback, Track, Artist, Log, RdsDisplayState
+from .forms import TrackDisplayForm, ArtistDisplayForm, RdsOverrideForm
 from .tables import PlaybackTable, TracksTable, ArtistsTable, LogTable
 from .audio import regenerate_audio
 from .tasks import regenerate_artist_audio, regenerate_single_audio
@@ -27,7 +27,7 @@ from django_tables2.views import SingleTableMixin
 from django.views.generic import TemplateView
 from django_tables2.export.views import ExportMixin
 from django_tables2.paginators import LazyPaginator
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from django.db import models
 from django.db.models import Value
 from django.db.models.functions import Coalesce, NullIf
@@ -39,6 +39,57 @@ from kvwjlogs.celery import app
 
 fourweeksago = datetime.now() - timedelta(days=29)
 fourweeksago_str = fourweeksago.strftime('%Y-%m-%d')
+
+
+@require_http_methods(["GET", "POST"])
+def rds_override(request):
+    state, _ = RdsDisplayState.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "clear":
+            state.override_text = None
+            state.override_lifetime = RdsDisplayState.UNTIL_CLEARED
+            state.save(update_fields=["override_text", "override_lifetime", "updated_at"])
+            return redirect("rds-override")
+
+        form = RdsOverrideForm(request.POST)
+        if action == "set" and form.is_valid():
+            state.override_text = form.cleaned_data["text"]
+            state.override_lifetime = form.cleaned_data["lifetime"]
+            state.save(update_fields=["override_text", "override_lifetime", "updated_at"])
+            return redirect("rds-override")
+
+        if action != "set":
+            form.add_error(None, "Invalid action.")
+    else:
+        form = RdsOverrideForm(
+            initial={
+                "lifetime": (
+                    state.override_lifetime
+                    if state.override_text
+                    else RdsDisplayState.UNTIL_NEXT_SONG
+                )
+            }
+        )
+
+    return render(
+        request,
+        "logviewer/rds_override.html",
+        {"form": form, "state": state},
+    )
+
+
+@require_GET
+def rds_display_status(request):
+    state, _ = RdsDisplayState.objects.get_or_create(pk=1)
+    return JsonResponse(
+        {
+            "current_text": state.current_text,
+            "override_text": state.override_text,
+            "override_lifetime": state.override_lifetime,
+        }
+    )
 
 
 @require_POST

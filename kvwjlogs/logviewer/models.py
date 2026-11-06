@@ -83,3 +83,29 @@ class Log(models.Model):
 
     def __str__(self):
         return f"{self.date} {self.timestamp}"
+
+
+class RdsDisplayState(models.Model):
+    UNTIL_CLEARED = "until_cleared"
+    UNTIL_NEXT_SONG = "until_next_song"
+    OVERRIDE_LIFETIMES = [
+        (UNTIL_CLEARED, "Until cleared"),
+        (UNTIL_NEXT_SONG, "Until the next playback update"),
+    ]
+
+    id = models.PositiveSmallIntegerField(
+        primary_key=True,
+        default=1,
+        editable=False,
+    )
+    current_text = models.CharField(max_length=64, blank=True, default="")
+    override_text = models.CharField(max_length=64, blank=True, null=True)
+    override_lifetime = models.CharField(
+        max_length=20,
+        choices=OVERRIDE_LIFETIMES,
+        default=UNTIL_CLEARED,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "rds_display_state"

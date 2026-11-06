@@ -1,6 +1,6 @@
 # urls.py
 from django.urls import path
-from .views import track_and_artist_edit, artist_edit, FilteredPlaybackListView, FilteredTrackListView, FilteredArtistListView, FilteredLogListView, regenerate_artist_audio_start, regenerate_artist_audio_status, start_single_audio, audio_task_status
+from .views import track_and_artist_edit, artist_edit, FilteredPlaybackListView, FilteredTrackListView, FilteredArtistListView, FilteredLogListView, regenerate_artist_audio_start, regenerate_artist_audio_status, start_single_audio, audio_task_status, rds_override, rds_display_status
 
 urlpatterns = [
     path("", FilteredPlaybackListView.as_view(), name="playback-list"),
@@ -8,6 +8,8 @@ urlpatterns = [
     path("track/<int:pk>/edit/", track_and_artist_edit, name="track-artist-edit"),
     path("artists", FilteredArtistListView.as_view(), name="artist-list"),
     path("log/", FilteredLogListView.as_view(), name="log-list"),
+    path("utilities/rds-override/", rds_override, name="rds-override"),
+    path("utilities/rds-display-status/", rds_display_status, name="rds-display-status"),
     path("artist/<int:pk>/edit/", artist_edit, name="artist-edit"),
     path(
         "artist/<int:pk>/regenerate-audio/",

@@ -14,6 +14,11 @@
 
 {% block extra_css %}
 <style>
+    .navbar {
+        width: 100vw;
+        left: 0;
+    }
+
     body {
         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
         font-size: 14px;
@@ -130,6 +135,12 @@
 
                 <ul class="dropdown-menu dropdown-menu-end"
                     aria-labelledby="utilitiesDropdown">
+
+                    <li>
+                        <a class="dropdown-item" href="{% url 'rds-override' %}">
+                            RDS Override
+                        </a>
+                    </li>
 
                     <li>
                         <a class="dropdown-item" href="{% url 'log-list' %}">
