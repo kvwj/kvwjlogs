@@ -16,6 +16,22 @@
       .form-compact .form-control { font-size: 13px; padding: 3px 6px; height: 28px; }
       .audio-preview { margin-top: 15px; padding: 10px; background-color: #f9f9f9; border: 1px solid #e3e3e3; border-radius: 4px; }
       .audio-row { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+      .audio-row > strong { flex: 0 0 250px; }
+      .audio-row > button { flex: 0 0 65px; align-self: flex-start; }
+      .audio-row > form { flex: 1 1 130px; margin: 0; align-self: flex-start; }
+      .audio-row .announcement { display: flex; align-items: center; gap: 8px; }
+      .audio-row .generate-audio-button {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 120px;
+        white-space: nowrap;
+      }
+      @media (max-width: 600px) {
+        .audio-row { flex-wrap: wrap; }
+        .audio-row > strong { flex-basis: 100%; }
+      }
     </style>
   </head>
   <body>
@@ -67,7 +83,7 @@
             <h4>Audio Announcements</h4>
             
             <div class="audio-row">
-              <strong>Announcement 1:</strong> 
+              <strong>Announcement 1 (artist + title):</strong>
               <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-1~0.mp3')">Play</button>
               <form method="post" style="display:inline;">
                 {% csrf_token %}
@@ -84,7 +100,7 @@
             </div>
             
             <div class="audio-row">
-              <strong>Announcement 2:</strong> 
+              <strong>Announcement 2 (title + artist):</strong>
               <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-2~0.mp3')">Play</button>
               <form method="post" style="display:inline;">
                 {% csrf_token %}
@@ -98,6 +114,48 @@
                 <span class="audio-status" role="status"></span>
                 </div>
               </form>
+            </div>
+
+            <div class="audio-row">
+              <strong>Announcement 3 (year music):</strong>
+              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-3~0.mp3')">Play</button>
+              {% if track.yearid_id %}
+                <form method="post" style="display:inline;">
+                  {% csrf_token %}
+                  <div class="announcement">
+                    <button
+                        type="button"
+                        class="generate-audio-button btn btn-xs btn-info"
+                        data-url="{% url 'start-single-audio' track.pk 3 %}">
+                        Regenerate
+                    </button>
+                    <span class="audio-status" role="status"></span>
+                  </div>
+                </form>
+              {% else %}
+                <span class="text-muted">Regeneration requires a track year.</span>
+              {% endif %}
+            </div>
+
+            <div class="audio-row">
+              <strong>Announcement 4 (title from year):</strong>
+              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-4~0.mp3')">Play</button>
+              {% if track.yearid_id %}
+                <form method="post" style="display:inline;">
+                  {% csrf_token %}
+                  <div class="announcement">
+                    <button
+                        type="button"
+                        class="generate-audio-button btn btn-xs btn-info"
+                        data-url="{% url 'start-single-audio' track.pk 4 %}">
+                        Regenerate
+                    </button>
+                    <span class="audio-status" role="status"></span>
+                  </div>
+                </form>
+              {% else %}
+                <span class="text-muted">Regeneration requires a track year.</span>
+              {% endif %}
             </div>
           </div>
 

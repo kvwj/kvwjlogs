@@ -123,9 +123,15 @@ def rds_display_status(request):
 def start_single_audio(request, pk, num):
     track = get_object_or_404(Track, pk=pk)
 
-    if num not in (1, 2):
+    if num not in (1, 2, 3, 4):
         return JsonResponse(
             {"error": "Invalid announcement number."},
+            status=400,
+        )
+
+    if num in (3, 4) and not track.yearid_id:
+        return JsonResponse(
+            {"error": f"Announcement {num} requires a track year."},
             status=400,
         )
 

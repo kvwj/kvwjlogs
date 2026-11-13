@@ -1,3 +1,4 @@
+import json
 from django.test import TestCase
 from django.urls import reverse
 from django.test import SimpleTestCase
@@ -6,7 +7,7 @@ from unittest.mock import patch, call
 from kombu.exceptions import OperationalError
 
 from .models import RdsDisplayState
-from .tasks import generate_category_audio
+from .tasks import generate_category_audio, regenerate_single_audio
 from .forms import CategoryAudioForm
 from .views import category_audio
 from django.test import RequestFactory
@@ -226,3 +227,73 @@ class AnnouncementTableTests(SimpleTestCase):
                 headers = next(table_class([]).as_values())
                 self.assertNotIn("Announcement 3", headers)
                 self.assertNotIn("Announcement 4", headers)
+
+
+class SingleAnnouncementAudioTests(SimpleTestCase):
+    def setUp(self):
+        self.track = SimpleNamespace(
+            pk=42,
+            display_name="Title",
+            artistid=SimpleNamespace(display_name="Artist"),
+            yearid=SimpleNamespace(year=1966),
+        )
+        self.track_query = patch("logviewer.tasks.Track.objects")
+        tracks = self.track_query.start()
+        self.addCleanup(self.track_query.stop)
+        tracks.select_related.return_value.get.return_value = self.track
+        self.update_state = patch.object(regenerate_single_audio, "update_state")
+        self.update_state.start()
+        self.addCleanup(self.update_state.stop)
+        self.generate = patch("logviewer.tasks.regenerate_audio")
+        self.generate_audio = self.generate.start()
+        self.addCleanup(self.generate.stop)
+
+    def test_year_announcement_variants_use_their_expected_text(self):
+        for num, expected_text in (
+            (3, "1966 music from Artist on K-V-W-J!"),
+            (4, "That was Title from 1966 on J-95!"),
+        ):
+            with self.subTest(announcement=num):
+                result = regenerate_single_audio.run(42, num)
+                self.assertEqual(result["announcement"], num)
+                self.assertEqual(
+                    self.generate_audio.call_args.args,
+                    (expected_text, 42, num),
+                )
+                self.generate_audio.reset_mock()
+
+    def test_year_announcement_rejects_track_without_year(self):
+        self.track.yearid = None
+
+        with self.assertRaisesMessage(ValueError, "requires a year"):
+            regenerate_single_audio.run(42, 3)
+
+        self.generate_audio.assert_not_called()
+
+    @patch("logviewer.views.get_object_or_404")
+    @patch("logviewer.views.regenerate_single_audio.delay")
+    def test_start_endpoint_queues_year_variant(self, delay, get_track):
+        from .views import start_single_audio
+
+        get_track.return_value = SimpleNamespace(pk=42, yearid_id=1966)
+        delay.return_value.id = "task-id"
+        response = start_single_audio(RequestFactory().post("/"), 42, 4)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {"task_id": "task-id"})
+        delay.assert_called_once_with(42, 4)
+
+    @patch("logviewer.views.get_object_or_404")
+    @patch("logviewer.views.regenerate_single_audio.delay")
+    def test_start_endpoint_rejects_year_variant_without_year(self, delay, get_track):
+        from .views import start_single_audio
+
+        get_track.return_value = SimpleNamespace(pk=42, yearid_id=None)
+        response = start_single_audio(RequestFactory().post("/"), 42, 3)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            "requires a track year",
+            json.loads(response.content)["error"],
+        )
+        delay.assert_not_called()

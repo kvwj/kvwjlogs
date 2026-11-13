@@ -151,17 +151,26 @@ def regenerate_artist_audio(self, artist_id):
 
 @shared_task(bind=True)
 def regenerate_single_audio(self, track_id, num):
-    track = Track.objects.select_related("artistid").get(pk=track_id)
+    if num not in (1, 2, 3, 4):
+        raise ValueError(f"Unsupported announcement number: {num}")
+
+    track = Track.objects.select_related("artistid", "yearid").get(pk=track_id)
 
     track_name = track.display_name
     artist_name = track.artistid.display_name if track.artistid else ""
+    year = track.yearid.year if track.yearid else None
 
-    if num == 1:
-        text = f"{artist_name} with {track_name} on J-95!"
-    elif num == 2:
-        text = f"{track_name}, that's {artist_name} on K-V-W-J!"
-    else:
-        raise ValueError(f"Unsupported announcement number: {num}")
+    texts = {
+        1: f"{artist_name} with {track_name} on J-95!",
+        2: f"{track_name}, that's {artist_name} on K-V-W-J!",
+        3: f"{year} music from {artist_name} on K-V-W-J!",
+        4: f"That was {track_name} from {year} on J-95!",
+    }
+    if num in (3, 4) and year is None:
+        raise ValueError(
+            f"Announcement {num} requires a year for track {track_id}."
+        )
+    text = texts[num]
 
     self.update_state(
         state="PROGRESS",
