@@ -1,7 +1,74 @@
 from celery import shared_task
+import logging
 
-from .models import Artist, Track
-from .audio import regenerate_audio  # Adjust to your actual module
+from .models import Artist, Track, Category
+from .audio import regenerate_audio, announcement_path
+
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True)
+def generate_category_audio(self, category_id, variants, mode):
+    if mode not in ("missing", "regenerate"):
+        raise ValueError("Unsupported generation mode.")
+    if not variants or any(num not in (1, 2, 3, 4) for num in variants):
+        raise ValueError("Select valid announcement variants.")
+
+    category = Category.objects.get(pk=category_id)
+    tracks = Track.objects.filter(categoryid=category).select_related(
+        "artistid", "yearid"
+    ).order_by("pk")
+    progress = {
+        "total": tracks.count() * len(variants),
+        "processed": 0,
+        "generated": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "current_track": "",
+    }
+    self.update_state(state="PROGRESS", meta=progress.copy())
+
+    for track in tracks.iterator():
+        title = track.display_name
+        artist = track.artistid.display_name if track.artistid else ""
+        year = track.yearid.year if track.yearid else None
+        texts = {
+            1: f"{artist} with {title} on J-95!",
+            2: f"{title}, that's {artist} on K-V-W-J!",
+            3: f"{year} music from {artist} on K-V-W-J!",
+            4: f"That was {title} from {year} on J-95!",
+        }
+        progress["current_track"] = " - ".join(
+            part for part in (title, artist, str(year) if year is not None else "") if part
+        )
+        for num in variants:
+            try:
+                if (
+                    (num in (3, 4) and year is None)
+                    or (
+                        mode == "missing"
+                        and announcement_path(track.pk, num).is_file()
+                    )
+                ):
+                    progress["skipped"] += 1
+                else:
+                    regenerate_audio(texts[num], track.pk, num)
+                    progress["generated"] += 1
+            except Exception as exc:
+                logger.exception(
+                    "Category audio generation failed for track %s, variant %s",
+                    track.pk, num,
+                )
+                progress["failed"] += 1
+                progress["errors"].append(
+                    f"Track {track.pk} ({title}), announcement {num}: {exc}"
+                )
+            progress["processed"] += 1
+            self.update_state(state="PROGRESS", meta=progress.copy())
+
+    return progress
 
 
 @shared_task(bind=True)

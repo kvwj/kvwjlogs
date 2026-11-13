@@ -1,9 +1,13 @@
 from pathlib import Path
 from openai import OpenAI
 
+def announcement_path(trackid, num):
+    return Path('/mnt/announcements/media') / f"{trackid}-{num}~0.mp3"
+
+
 def regenerate_audio(text, trackid, num):
     client = OpenAI()
-    speech_file_path = Path(str('/mnt/announcements/media')) / Path(str(trackid) + '-' + str(num)+ "~0.mp3")
+    speech_file_path = announcement_path(trackid, num)
 
     with client.audio.speech.with_streaming_response.create(
         model="gpt-4o-mini-tts",

@@ -1,5 +1,18 @@
 # kvwjlogs
 
+## Category Announcements
+
+Utilities > Announcements generates audio in the existing Celery worker
+for any category except Sunday. Select any of the four announcement variants and choose to
+generate missing files or regenerate all selected files. Variants 3 and 4 need a
+track year; these are skipped when the year is absent. Progress includes generated,
+skipped, and failed counts with individual errors. No schema migration is required.
+The worker needs the OpenAI API credentials and the existing announcement media
+mount. Generation uses the same voice, model, and filenames as the existing audio
+tools. Like the other utilities, this page is available without a login.
+The playback log and track tables (including artist pages) offer playback
+controls for all four announcement variants.
+
 ## RDS Override
 
 The Utilities menu includes an RDS Override page that reports the last text sent

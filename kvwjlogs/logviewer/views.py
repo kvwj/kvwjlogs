@@ -9,16 +9,18 @@ from django.http import HttpResponse, JsonResponse
 #    return HttpResponse("Hello, world. You're at the log viewer index.")
 
 from datetime import datetime, timedelta
+import logging
+from kombu.exceptions import KombuError
 
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.db import IntegrityError
 
 from .models import Playback, Track, Artist, Log, RdsDisplayState
-from .forms import TrackDisplayForm, ArtistDisplayForm, RdsOverrideForm
+from .forms import TrackDisplayForm, ArtistDisplayForm, RdsOverrideForm, CategoryAudioForm
 from .tables import PlaybackTable, TracksTable, ArtistsTable, LogTable
 from .audio import regenerate_audio
-from .tasks import regenerate_artist_audio, regenerate_single_audio
+from .tasks import regenerate_artist_audio, regenerate_single_audio, generate_category_audio
 from .filters import ArtistFilter, TrackFilter, PlaybackFilter
 
 import django_filters
@@ -39,6 +41,31 @@ from kvwjlogs.celery import app
 
 fourweeksago = datetime.now() - timedelta(days=29)
 fourweeksago_str = fourweeksago.strftime('%Y-%m-%d')
+
+
+@require_http_methods(["GET", "POST"])
+def category_audio(request, task_id=None):
+    form = CategoryAudioForm(request.POST if request.method == "POST" else None)
+    status = 200
+    if request.method == "POST" and form.is_valid():
+        try:
+            task = generate_category_audio.delay(
+                form.cleaned_data["category"].pk,
+                form.cleaned_data["variants"],
+                form.cleaned_data["mode"],
+            )
+        except KombuError:
+            logging.getLogger(__name__).exception("Could not queue category audio generation")
+            form.add_error(None, "Could not start generation. Check the Celery broker and try again.")
+            status = 503
+        else:
+            return redirect("category-audio-progress", task_id=task.id)
+    return render(
+        request,
+        "logviewer/category_audio.html",
+        {"form": form, "task_id": task_id},
+        status=status,
+    )
 
 
 @require_http_methods(["GET", "POST"])

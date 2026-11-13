@@ -1,0 +1,85 @@
+{% extends "logviewer/base.html" %}
+{% load django_bootstrap5 %}
+
+{% block title %}Announcements{% endblock %}
+
+{% block content %}
+    <h1>Announcements</h1>
+    <p>Generate announcement files for the selected category using the display names
+        for each track and artist. Year-based announcements are skipped when no year is available.</p>
+    <form method="post" id="category-audio-form">
+        {% csrf_token %}
+        {% bootstrap_form form %}
+        <p class="text-muted">Regeneration overwrites existing selected files.
+            Generation uses the OpenAI API and may incur charges.</p>
+        <button type="submit" class="btn btn-primary" id="generate-button">Start generation</button>
+    </form>
+
+    {% if task_id %}
+        <section class="mt-4" aria-labelledby="progress-heading">
+            <h2 class="h4" id="progress-heading">Generation progress</h2>
+            <p id="progress-message" role="status">Waiting for the worker...</p>
+            <progress id="progress-bar" value="0" max="1" class="w-100"></progress>
+            <p id="current-track"></p>
+            <ul id="generation-errors" class="text-danger"></ul>
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.getElementById("category-audio-form").addEventListener("submit", (event) => {
+        if (document.querySelector('[name="mode"]:checked')?.value === "regenerate"
+            && !window.confirm("Overwrite the selected announcement files for this category?")) {
+            event.preventDefault();
+        }
+    });
+</script>
+{% if task_id %}
+<script>
+    const button = document.getElementById("generate-button");
+    const message = document.getElementById("progress-message");
+    button.disabled = true;
+
+    async function pollCategoryAudio() {
+        try {
+            const response = await fetch("{% url 'audio-task-status' task_id %}", {cache: "no-store"});
+            if (!response.ok) {
+                throw new Error("Could not retrieve progress. Generation may still be running; reload to retry.");
+            }
+            const data = await response.json();
+            if (data.state === "FAILURE" || data.state === "REVOKED") {
+                throw new Error(data.error || "Generation stopped.");
+            }
+            const progress = data.state === "SUCCESS" ? data.result : data.progress;
+            if (progress) {
+                const bar = document.getElementById("progress-bar");
+                bar.max = progress.total || 1;
+                bar.value = progress.processed;
+                message.textContent =
+                    `${progress.processed} of ${progress.total} processed: ` +
+                    `${progress.generated} generated, ${progress.skipped} skipped, ${progress.failed} failed.`;
+                document.getElementById("current-track").textContent = progress.current_track;
+                const errors = document.getElementById("generation-errors");
+                errors.replaceChildren();
+                for (const error of progress.errors) {
+                    const item = document.createElement("li");
+                    item.textContent = error;
+                    errors.appendChild(item);
+                }
+            }
+            if (data.state === "SUCCESS") {
+                message.textContent = "Finished. " + message.textContent;
+                button.disabled = false;
+                return;
+            }
+            window.setTimeout(pollCategoryAudio, 1500);
+        } catch (error) {
+            message.textContent = error.message;
+            button.disabled = false;
+        }
+    }
+    pollCategoryAudio();
+</script>
+{% endif %}
+{% endblock %}

@@ -6,9 +6,20 @@ from django.urls import reverse
 from django.utils.http import urlencode
 from django.utils.html import format_html
 
+
+def announcement_button(track_id, num):
+    return format_html(
+        '<button type="button" class="btn btn-light btn-sm play-btn" '
+        'onclick="loadAudio(this, \'{}\')">Play</button>',
+        f"/media/{track_id}-{num}~0.mp3",
+    )
+
+
 class PlaybackTable(tables.Table):
     announcement_1 = tables.Column(empty_values=(), verbose_name="Announcement 1")
     announcement_2 = tables.Column(empty_values=(), verbose_name="Announcement 2")
+    announcement_3 = tables.Column(empty_values=(), verbose_name="Announcement 3", exclude_from_export=True)
+    announcement_4 = tables.Column(empty_values=(), verbose_name="Announcement 4", exclude_from_export=True)
     category = tables.Column(
         accessor="trackid__categoryid__category",
         verbose_name="Category",
@@ -71,22 +82,16 @@ class PlaybackTable(tables.Table):
         return "—"
 
     def render_announcement_1(self, record):
-        track_id = record.trackid.pk
-        url = f"/media/{track_id}-1~0.mp3"
-        return format_html(
-            '<button type="button" class="btn btn-light btn-sm play-btn" '
-            'onclick="loadAudio(this, \'{}\')">Play</button>',
-            url
-            )
+        return announcement_button(record.trackid.pk, 1)
 
     def render_announcement_2(self, record):
-        track_id = record.trackid.pk
-        url = f"/media/{track_id}-2~0.mp3"
-        return format_html(
-            '<button type="button" class="btn btn-light btn-sm play-btn" '
-            'onclick="loadAudio(this, \'{}\')">Play</button>',
-            url
-            )
+        return announcement_button(record.trackid.pk, 2)
+
+    def render_announcement_3(self, record):
+        return announcement_button(record.trackid.pk, 3)
+
+    def render_announcement_4(self, record):
+        return announcement_button(record.trackid.pk, 4)
 
     def value_artist(self, record):
         artist = record.trackid.artistid
@@ -99,11 +104,16 @@ class PlaybackTable(tables.Table):
 
     class Meta:
         model = Playback
-        fields = ("category", "artist", "track_name", "year", "date", "timestamp", "announcement_1", "announcement_2")
+        fields = (
+            "category", "artist", "track_name", "year", "date", "timestamp",
+            "announcement_1", "announcement_2", "announcement_3", "announcement_4",
+        )
 
 class TracksTable(tables.Table):
     announcement_1 = tables.Column(empty_values=(), verbose_name="Announcement 1")
     announcement_2 = tables.Column(empty_values=(), verbose_name="Announcement 2")
+    announcement_3 = tables.Column(empty_values=(), verbose_name="Announcement 3", exclude_from_export=True)
+    announcement_4 = tables.Column(empty_values=(), verbose_name="Announcement 4", exclude_from_export=True)
     category = tables.Column(
         accessor="categoryid__category",
         verbose_name="Category",
@@ -166,24 +176,16 @@ class TracksTable(tables.Table):
         return "—"
 
     def render_announcement_1(self, record):
-        track_id = record.pk
-        url = f"/media/{track_id}-1~0.mp3"
-
-        return format_html(
-            '<button type="button" class="btn btn-light btn-sm play-btn" '
-            'onclick="loadAudio(this, \'{}\')">Play</button>',
-            url,
-        )
+        return announcement_button(record.pk, 1)
 
     def render_announcement_2(self, record):
-        track_id = record.pk
-        url = f"/media/{track_id}-2~0.mp3"
+        return announcement_button(record.pk, 2)
 
-        return format_html(
-            '<button type="button" class="btn btn-light btn-sm play-btn" '
-            'onclick="loadAudio(this, \'{}\')">Play</button>',
-            url,
-        )
+    def render_announcement_3(self, record):
+        return announcement_button(record.pk, 3)
+
+    def render_announcement_4(self, record):
+        return announcement_button(record.pk, 4)
 
     class Meta:
         model = Track
@@ -194,6 +196,8 @@ class TracksTable(tables.Table):
             "year",
             "announcement_1",
             "announcement_2",
+            "announcement_3",
+            "announcement_4",
         )
         attrs = {
             "class": "table table-sm table-hover",
