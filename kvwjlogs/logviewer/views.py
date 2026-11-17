@@ -10,17 +10,30 @@ from django.http import HttpResponse, JsonResponse
 
 from datetime import datetime, timedelta
 import logging
+import stat
 from kombu.exceptions import KombuError
 
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.db import IntegrityError
 
-from .models import Playback, Track, Artist, Log, RdsDisplayState
-from .forms import TrackDisplayForm, ArtistDisplayForm, RdsOverrideForm, CategoryAudioForm
+from .models import (
+    Playback, Track, Artist, Log, RdsDisplayState, AnnouncementVoice, UtilitySettings,
+)
+from .forms import (
+    TrackDisplayForm, ArtistDisplayForm, RdsOverrideForm, CategoryAudioForm,
+    SpeechSelectionForm, ArtistAudioForm, AnnouncementShiftForm,
+)
 from .tables import PlaybackTable, TracksTable, ArtistsTable, LogTable
-from .audio import regenerate_audio
-from .tasks import regenerate_artist_audio, regenerate_single_audio, generate_category_audio
+from .audio import (
+    EIGHTIES_SHOW_PROVIDER, EIGHTIES_SHOW_VOICE, announcement_path, regenerate_audio,
+    speech_title, SPEECH_PROVIDERS, SPEECH_VOICES,
+    SPEECH_VOICE_GENDERS, LEGACY_MICROSOFT_VOICES, validate_speech_options,
+)
+from .tasks import (
+    regenerate_artist_audio, regenerate_single_audio, generate_category_audio,
+    generate_voice_preview, preview_tracks,
+)
 from .filters import ArtistFilter, TrackFilter, PlaybackFilter
 
 import django_filters
@@ -30,6 +43,7 @@ from django.views.generic import TemplateView
 from django_tables2.export.views import ExportMixin
 from django_tables2.paginators import LazyPaginator
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from django.views.decorators.cache import never_cache
 from django.db import models
 from django.db.models import Value
 from django.db.models.functions import Coalesce, NullIf
@@ -53,6 +67,8 @@ def category_audio(request, task_id=None):
                 form.cleaned_data["category"].pk,
                 form.cleaned_data["variants"],
                 form.cleaned_data["mode"],
+                provider=form.cleaned_data["provider"],
+                voice=form.cleaned_data["voice"],
             )
         except KombuError:
             logging.getLogger(__name__).exception("Could not queue category audio generation")
@@ -63,9 +79,146 @@ def category_audio(request, task_id=None):
     return render(
         request,
         "logviewer/category_audio.html",
-        {"form": form, "task_id": task_id},
+        {"form": form, "task_id": task_id, "speech_voices": SPEECH_VOICES},
         status=status,
     )
+
+
+def preview_track_id(value):
+    if not value or not value.isascii() or not value.isdecimal() or len(value) > 19:
+        raise ValueError("Invalid preview track ID.")
+    track_id = int(value)
+    if not 1 <= track_id <= 9223372036854775807:
+        raise ValueError("Invalid preview track ID.")
+    return track_id
+
+
+@require_GET
+@never_cache
+def random_preview_track(request):
+    exclude = request.GET.get("exclude")
+    tracks = preview_tracks()
+    if exclude is not None:
+        try:
+            track_id = preview_track_id(exclude)
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
+        tracks = tracks.exclude(pk=track_id)
+    track = tracks.order_by("?").first()
+    if track is None:
+        message = (
+            "No other tracks with a title and artist are available."
+            if exclude is not None
+            else "No tracks with a title and artist are available for voice previews."
+        )
+        return JsonResponse({"error": message}, status=404)
+    return JsonResponse({
+        "track_id": str(track.pk), "track_title": track.display_name,
+        "track_artist": track.artistid.display_name,
+    })
+
+
+@require_POST
+def voice_preview(request):
+    provider = request.POST.get("provider", "")
+    voice = request.POST.get("voice", "")
+    try:
+        validate_speech_options(provider, voice)
+        track_id = request.POST.get("track_id")
+        if track_id is not None:
+            track_id = preview_track_id(track_id)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    try:
+        if track_id is None:
+            task = generate_voice_preview.delay(provider, voice)
+        else:
+            task = generate_voice_preview.delay(provider, voice, track_id=track_id)
+    except KombuError:
+        logging.getLogger(__name__).exception("Could not queue voice preview")
+        return JsonResponse({"error": "Could not start preview. Check the Celery broker."}, status=503)
+    return JsonResponse({"task_id": task.id})
+
+
+@require_http_methods(["GET", "POST"])
+def utility_settings(request):
+    settings, _ = UtilitySettings.objects.get_or_create(pk=1)
+    section = request.POST.get("section", "voices") if request.method == "POST" else None
+    if section not in (None, "voices", "shifts"):
+        return HttpResponse("Invalid settings section.", status=400)
+    data = request.POST if section == "voices" else None
+    female_form = SpeechSelectionForm(data, prefix="female", gender="female", initial={
+        "provider": settings.track_speech_provider, "voice": settings.track_speech_voice,
+    })
+    male_form = SpeechSelectionForm(data, prefix="male", gender="male", initial={
+        "provider": settings.male_track_speech_provider, "voice": settings.male_track_speech_voice,
+    })
+    second_male_form = SpeechSelectionForm(data, prefix="male_2", gender="male", initial={
+        "provider": settings.second_male_track_speech_provider,
+        "voice": settings.second_male_track_speech_voice,
+    })
+    shift_form = AnnouncementShiftForm(
+        request.POST if section == "shifts" else None,
+        initial={
+            "female_shift_start": settings.female_shift_start,
+            "male_shift_start": settings.male_shift_start,
+            "second_male_shift_start": settings.second_male_shift_start,
+            "eighties_show_start": settings.eighties_show_start,
+            "eighties_show_end": settings.eighties_show_end,
+        },
+    )
+    if section == "voices":
+        if all([female_form.is_valid(), male_form.is_valid(), second_male_form.is_valid()]):
+            settings.track_speech_provider = female_form.cleaned_data["provider"]
+            settings.track_speech_voice = female_form.cleaned_data["voice"]
+            settings.male_track_speech_provider = male_form.cleaned_data["provider"]
+            settings.male_track_speech_voice = male_form.cleaned_data["voice"]
+            settings.second_male_track_speech_provider = second_male_form.cleaned_data["provider"]
+            settings.second_male_track_speech_voice = second_male_form.cleaned_data["voice"]
+            settings.save(update_fields=[
+                "track_speech_provider", "track_speech_voice",
+                "male_track_speech_provider", "male_track_speech_voice",
+                "second_male_track_speech_provider", "second_male_track_speech_voice",
+            ])
+            return redirect(f"{reverse('utility-settings')}?saved=1")
+    elif section == "shifts" and shift_form.is_valid():
+        settings.female_shift_start = shift_form.cleaned_data["female_shift_start"]
+        settings.male_shift_start = shift_form.cleaned_data["male_shift_start"]
+        settings.second_male_shift_start = shift_form.cleaned_data["second_male_shift_start"]
+        settings.eighties_show_start = shift_form.cleaned_data["eighties_show_start"]
+        settings.eighties_show_end = shift_form.cleaned_data["eighties_show_end"]
+        settings.save(update_fields=[
+            "female_shift_start", "male_shift_start", "second_male_shift_start",
+            "eighties_show_start", "eighties_show_end",
+        ])
+        return redirect(f"{reverse('utility-settings')}?saved=1")
+    invalid_saved = False
+    if section != "voices":
+        try:
+            validate_speech_options(settings.track_speech_provider, settings.track_speech_voice, gender="female")
+            validate_speech_options(settings.male_track_speech_provider, settings.male_track_speech_voice, gender="male")
+            validate_speech_options(settings.second_male_track_speech_provider, settings.second_male_track_speech_voice, gender="male")
+        except ValueError:
+            invalid_saved = True
+    choices = {
+        gender: {
+            provider: [
+                (voice, label) for voice, label in voices
+                if SPEECH_VOICE_GENDERS[provider][voice] == gender
+            ]
+            for provider, voices in SPEECH_VOICES.items()
+        }
+        for gender in ("female", "male")
+    }
+    return render(request, "logviewer/utility_settings.html", {
+        "female_form": female_form,
+        "male_form": male_form,
+        "second_male_form": second_male_form,
+        "shift_form": shift_form,
+        "gender_voice_choices": choices,
+        "invalid_saved": invalid_saved,
+        "saved": request.method == "GET" and request.GET.get("saved") == "1",
+    })
 
 
 @require_http_methods(["GET", "POST"])
@@ -119,31 +272,74 @@ def rds_display_status(request):
     )
 
 
+def voice_set_settings(settings, voice_set):
+    if voice_set == "eighties":
+        return EIGHTIES_SHOW_PROVIDER, EIGHTIES_SHOW_VOICE, "female"
+    prefix, gender = {
+        "female": ("track_speech_", "female"),
+        "male": ("male_track_speech_", "male"),
+        "male_2": ("second_male_track_speech_", "male"),
+    }[voice_set]
+    return getattr(settings, prefix + "provider"), getattr(settings, prefix + "voice"), gender
+
+
 @require_POST
 def start_single_audio(request, pk, num):
     track = get_object_or_404(Track, pk=pk)
 
-    if num not in (1, 2, 3, 4):
+    if num not in range(1, 17):
         return JsonResponse(
             {"error": "Invalid announcement number."},
             status=400,
         )
 
-    if num in (3, 4) and not track.yearid_id:
+    if (num - 1) % 4 + 1 in (3, 4) and not track.yearid_id:
         return JsonResponse(
             {"error": f"Announcement {num} requires a track year."},
             status=400,
         )
 
-    task = regenerate_single_audio.delay(track.pk, num)
+    settings, _ = UtilitySettings.objects.get_or_create(pk=1)
+    voice_set = ("female", "male", "male_2", "eighties")[(num - 1) // 4]
+    provider, voice, gender = voice_set_settings(settings, voice_set)
+    try:
+        validate_speech_options(provider, voice, gender=gender)
+    except ValueError:
+        logging.getLogger(__name__).error("Invalid track speech settings")
+        return JsonResponse(
+            {"error": "Invalid track speech settings. Update them in Utilities > Settings."},
+            status=503,
+        )
+    task = regenerate_single_audio.delay(
+        track.pk, num, provider=provider, voice=voice,
+    )
 
     return JsonResponse({"task_id": task.id})
 
 @require_POST
 def regenerate_artist_audio_start(request, pk):
     artist = get_object_or_404(Artist, pk=pk)
-
-    task = regenerate_artist_audio.delay(artist.pk)
+    form = ArtistAudioForm(
+        request.POST,
+        include_eighties=artist.track_set.filter(categoryid__category__icontains="80s").exists(),
+    )
+    if not form.is_valid():
+        return JsonResponse({
+            "error": "Select a voice set, at least one announcement variety, and a valid generation mode.",
+        }, status=400)
+    voice_set = form.cleaned_data["voice_set"]
+    settings, _ = UtilitySettings.objects.get_or_create(pk=1)
+    provider, voice, gender = voice_set_settings(settings, voice_set)
+    try:
+        validate_speech_options(provider, voice, gender=gender)
+    except ValueError:
+        logging.getLogger(__name__).error("Invalid artist speech settings")
+        return JsonResponse({"error": "Invalid speech settings. Update them in Utilities > Settings."}, status=503)
+    offset = {"female": 0, "male": 4, "male_2": 8, "eighties": 12}[voice_set]
+    task = regenerate_artist_audio.delay(
+        artist.pk, variants=[num + offset for num in form.cleaned_data["variants"]],
+        provider=provider, voice=voice, mode=form.cleaned_data["mode"],
+    )
 
     return JsonResponse({"task_id": task.id})
 
@@ -211,7 +407,7 @@ class FilteredPlaybackListView(PerPageMixin, ExportMixin, SingleTableMixin, Filt
     template_name = 'logviewer/playback.html'
     filterset_class = PlaybackFilter
 
-    exclude_columns = ("announcement_1", "announcement_2")
+    exclude_columns = ("announcements",)
 
     table_pagination = {
         'per_page': 250,
@@ -339,6 +535,71 @@ class FilteredLogListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterVie
         kwargs["request"] = self.request
         return kwargs
 
+def announcement_file_statuses(track_id):
+    records = {
+        record.variant: record
+        for record in AnnouncementVoice.objects.filter(track_id=track_id)
+    }
+    labels = (
+        "artist + title", "title + artist", "year music", "title from year",
+    )
+    providers = dict(SPEECH_PROVIDERS)
+    directory = announcement_path(track_id, 1).parent
+    try:
+        if not stat.S_ISDIR(directory.stat().st_mode):
+            raise NotADirectoryError(str(directory))
+        directory_available = True
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Announcement directory is unavailable: %s", directory, exc_info=True,
+        )
+        directory_available = False
+
+    statuses = []
+    for num in range(1, 17):
+        label = labels[(num - 1) % 4]
+        display = "File status unavailable"
+        if directory_available:
+            path = announcement_path(track_id, num)
+            try:
+                exists = stat.S_ISREG(path.stat().st_mode)
+            except FileNotFoundError:
+                exists = False
+            except OSError:
+                logging.getLogger(__name__).warning(
+                    "Could not check announcement file: %s", path, exc_info=True,
+                )
+                exists = None
+            if exists is False:
+                display = "File missing"
+            elif exists:
+                record = records.get(num)
+                if record and record.provider:
+                    provider = providers.get(record.provider, record.provider)
+                    voices = dict(SPEECH_VOICES.get(record.provider, ()))
+                    if record.provider == "microsoft":
+                        voices.update(LEGACY_MICROSOFT_VOICES)
+                    voice = voices.get(
+                        record.voice, record.voice or "Unknown voice",
+                    )
+                    display = f"File exists: {provider} / {voice}"
+                else:
+                    display = "File exists: service and voice unknown"
+        statuses.append({
+            "number": num, "label": label, "display": display,
+            "shift": f"Shift {(num - 1) // 4 + 1}" if num <= 12 else "80s show",
+            "variety": (num - 1) % 4 + 1,
+            "requires_year": (num - 1) % 4 + 1 in (3, 4),
+        })
+    return statuses
+
+
+@require_GET
+def track_announcement_status(request, pk):
+    track = get_object_or_404(Track, pk=pk)
+    return JsonResponse({"announcements": announcement_file_statuses(track.pk)})
+
+
 def track_and_artist_edit(request, pk):
     track = get_object_or_404(Track, pk=pk)
     artist = track.artistid
@@ -352,15 +613,24 @@ def track_and_artist_edit(request, pk):
     artist_saved = False
 
     if request.method == "POST":
-        if regenerate1_clicked:
-            text = artist.display_name + ' with ' + track.display_name + ' on J-95!'
-            num = 1
-            regenerate_audio(text, track.id, num)
-            return redirect(request.path_info)
-        if regenerate2_clicked:
-            text = track.display_name + ", that's "  + artist.display_name + ' on K-V-W-J!'
-            num = 2
-            regenerate_audio(text, track.id, num)
+        if regenerate1_clicked or regenerate2_clicked:
+            settings, _ = UtilitySettings.objects.get_or_create(pk=1)
+            validate_speech_options(
+                settings.track_speech_provider, settings.track_speech_voice, gender="female",
+            )
+            title = speech_title(
+                track.display_name, settings.track_speech_provider, settings.track_speech_voice,
+            )
+            if regenerate1_clicked:
+                text = artist.display_name + ' with ' + title + ' on J-95!'
+                num = 1
+            else:
+                text = title + ", that's " + artist.display_name + ' on K-V-W-J!'
+                num = 2
+            regenerate_audio(
+                text, track.id, num,
+                provider=settings.track_speech_provider, voice=settings.track_speech_voice,
+            )
             return redirect(request.path_info)
         if track_changed:
             track_form = TrackDisplayForm(request.POST, instance=track)
@@ -399,13 +669,14 @@ def track_and_artist_edit(request, pk):
             "artist": artist,
             "track_form": track_form,
             "artist_form": artist_form,
+            "announcements": announcement_file_statuses(track.pk),
         },
     )
 
 def artist_edit(request, pk):
     artist = get_object_or_404(Artist, pk=pk)
 
-    tracks_list = artist.track_set.all()
+    tracks_list = artist.track_set.select_related("artistid", "categoryid", "yearid")
     tracks_table = TracksTable(tracks_list)
 
     regenerate_all_clicked = "regenerate_all_audio" in request.POST
@@ -447,7 +718,10 @@ def artist_edit(request, pk):
         {
             "artist": artist,
             "artist_form": artist_form,
-            "tracks_table": tracks_table
+            "tracks_table": tracks_table,
+            "audio_form": ArtistAudioForm(
+                include_eighties=tracks_list.filter(categoryid__category__icontains="80s").exists(),
+            ),
         },
     )
 

@@ -1,0 +1,16 @@
+{{ speech_voices|json_script:"speech-voices" }}
+<script>
+    const speechVoices = JSON.parse(document.getElementById("speech-voices").textContent);
+    const providerSelect = document.getElementById("id_provider");
+    const voiceSelect = document.getElementById("id_voice");
+    providerSelect.addEventListener("change", () => {
+        const selectedVoice = voiceSelect.value;
+        voiceSelect.replaceChildren();
+        for (const [value, label] of speechVoices[providerSelect.value]) {
+            voiceSelect.add(new Option(label, value));
+        }
+        if (speechVoices[providerSelect.value].some(([value]) => value === selectedVoice)) {
+            voiceSelect.value = selectedVoice;
+        }
+    });
+</script>

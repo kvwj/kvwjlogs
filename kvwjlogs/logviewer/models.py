@@ -6,6 +6,7 @@
 #   * Remove `managed = False` lines if you wish to allow Django to create, modify, and delete the table
 # Feel free to rename the models, but don't rename db_table values or field names.
 from django.db import models
+from datetime import time
 
 class Year(models.Model):
     year = models.IntegerField(blank=True, null=True)
@@ -109,3 +110,36 @@ class RdsDisplayState(models.Model):
 
     class Meta:
         db_table = "rds_display_state"
+
+
+class AnnouncementVoice(models.Model):
+    track_id = models.IntegerField()
+    variant = models.PositiveSmallIntegerField()
+    provider = models.CharField(max_length=20, blank=True)
+    voice = models.CharField(max_length=20, blank=True)
+
+    class Meta:
+        db_table = "announcement_voice"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["track_id", "variant"], name="announcement_voice_track_variant",
+            ),
+        ]
+
+
+class UtilitySettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    track_speech_provider = models.CharField(max_length=20, default="microsoft")
+    track_speech_voice = models.CharField(max_length=20, default="nova_dragon_hd")
+    male_track_speech_provider = models.CharField(max_length=20, default="microsoft")
+    male_track_speech_voice = models.CharField(max_length=20, default="andrew_dragon_hd")
+    second_male_track_speech_provider = models.CharField(max_length=20, default="microsoft")
+    second_male_track_speech_voice = models.CharField(max_length=20, default="davis_dragon_hd")
+    female_shift_start = models.TimeField(default=time(6, 0))
+    male_shift_start = models.TimeField(default=time(12, 0))
+    second_male_shift_start = models.TimeField(default=time(19, 0))
+    eighties_show_start = models.TimeField(default=time(21, 0))
+    eighties_show_end = models.TimeField(default=time(0, 0))
+
+    class Meta:
+        db_table = "utility_settings"

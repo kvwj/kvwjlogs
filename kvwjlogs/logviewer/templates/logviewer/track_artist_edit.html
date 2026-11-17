@@ -19,7 +19,7 @@
       .audio-row > strong { flex: 0 0 250px; }
       .audio-row > button { flex: 0 0 65px; align-self: flex-start; }
       .audio-row > form { flex: 1 1 130px; margin: 0; align-self: flex-start; }
-      .audio-row .announcement { display: flex; align-items: center; gap: 8px; }
+      .audio-row .announcement { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
       .audio-row .generate-audio-button {
         box-sizing: border-box;
         display: inline-flex;
@@ -81,82 +81,36 @@
           <!-- Audio Preview & Regeneration Section -->
           <div class="audio-preview">
             <h4>Audio Announcements</h4>
+            <p class="text-muted">Regeneration uses the corresponding shift voice selected in
+              <a href="{% url 'utility-settings' %}">Utilities &gt; Settings</a>.
+              80s show announcements always use Microsoft Emma DragonHD.</p>
             
-            <div class="audio-row">
-              <strong>Announcement 1 (artist + title):</strong>
-              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-1~0.mp3')">Play</button>
-              <form method="post" style="display:inline;">
-                {% csrf_token %}
-                <div class="announcement">
-                <button
-                    type="button"
-                    class="generate-audio-button btn btn-xs btn-info"
-                    data-url="{% url 'start-single-audio' track.pk 1 %}">
-                    Regenerate
-                </button>
-                <span class="audio-status" role="status"></span>
-                </div>
-              </form>
-            </div>
-            
-            <div class="audio-row">
-              <strong>Announcement 2 (title + artist):</strong>
-              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-2~0.mp3')">Play</button>
-              <form method="post" style="display:inline;">
-                {% csrf_token %}
-                <div class="announcement">
-                <button
-                    type="button"
-                    class="generate-audio-button btn btn-xs btn-info"
-                    data-url="{% url 'start-single-audio' track.pk 2 %}">
-                    Regenerate
-                </button>
-                <span class="audio-status" role="status"></span>
-                </div>
-              </form>
-            </div>
-
-            <div class="audio-row">
-              <strong>Announcement 3 (year music):</strong>
-              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-3~0.mp3')">Play</button>
-              {% if track.yearid_id %}
+            {% for announcement in announcements %}
+            <div class="audio-row" data-variant="{{ announcement.number }}">
+              <strong>{{ announcement.shift }} - {{ announcement.variety }} ({{ announcement.label }}):</strong>
+              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-{{ announcement.number }}~0.mp3')">Play</button>
+              {% if not announcement.requires_year or track.yearid_id %}
                 <form method="post" style="display:inline;">
                   {% csrf_token %}
                   <div class="announcement">
                     <button
                         type="button"
                         class="generate-audio-button btn btn-xs btn-info"
-                        data-url="{% url 'start-single-audio' track.pk 3 %}">
+                        data-url="{% url 'start-single-audio' track.pk announcement.number %}">
                         Regenerate
                     </button>
+                    <span class="audio-file-info text-muted">{{ announcement.display }}</span>
                     <span class="audio-status" role="status"></span>
                   </div>
                 </form>
               {% else %}
-                <span class="text-muted">Regeneration requires a track year.</span>
+                <div class="announcement">
+                  <span class="text-muted">Regeneration requires a track year.</span>
+                  <span class="audio-file-info text-muted">{{ announcement.display }}</span>
+                </div>
               {% endif %}
             </div>
-
-            <div class="audio-row">
-              <strong>Announcement 4 (title from year):</strong>
-              <button class="btn btn-xs btn-info" onclick="loadAudio(this, '/media/{{ track.pk }}-4~0.mp3')">Play</button>
-              {% if track.yearid_id %}
-                <form method="post" style="display:inline;">
-                  {% csrf_token %}
-                  <div class="announcement">
-                    <button
-                        type="button"
-                        class="generate-audio-button btn btn-xs btn-info"
-                        data-url="{% url 'start-single-audio' track.pk 4 %}">
-                        Regenerate
-                    </button>
-                    <span class="audio-status" role="status"></span>
-                  </div>
-                </form>
-              {% else %}
-                <span class="text-muted">Regeneration requires a track year.</span>
-              {% endif %}
-            </div>
+            {% endfor %}
           </div>
 
         </div>
@@ -178,10 +132,8 @@
             const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
             
             if (!response.ok) {
-                const icon = document.createElement('span');
-                icon.innerHTML = ' ❌ File not found';
-                icon.className = 'text-danger';
-                button.parentNode.replaceChild(icon, button);
+                button.parentElement.querySelector(".audio-file-info").textContent =
+                    response.status === 404 ? "File missing" : "Could not access audio file";
                 return;
             }
             
@@ -199,13 +151,30 @@
             
         } catch (error) {
             console.error("Error checking audio file:", error);
+            button.parentElement.querySelector(".audio-file-info").textContent =
+                "Could not check audio file";
         }
     }
     </script>
     <script>
+    async function refreshAnnouncementFileStatus() {
+        const response = await fetch("{% url 'track-announcement-status' track.pk %}", {cache: "no-store"});
+        if (!response.ok) {
+            throw new Error("Could not refresh file status. Reload the page to retry.");
+        }
+        const data = await response.json();
+        for (const announcement of data.announcements) {
+            const info = document.querySelector(
+                `.audio-row[data-variant="${announcement.number}"] .audio-file-info`
+            );
+            info.textContent = announcement.display;
+        }
+    }
+
     document.querySelectorAll(".generate-audio-button").forEach(button => {
         button.addEventListener("click", async () => {
             const status = button.parentElement.querySelector(".audio-status");
+            let queued = false;
 
             button.disabled = true;
             status.textContent = "Queueing audio generation...";
@@ -226,6 +195,7 @@
                         data.error || "Could not queue audio generation."
                     );
                 }
+                queued = true;
 
                 const statusUrl =
                     "{% url 'audio-task-status' 'TASK_ID' %}"
@@ -251,13 +221,20 @@
                     } else if (task.state === "SUCCESS") {
                         status.textContent = "Complete!";
                         break;
-                    } else if (task.state === "FAILURE") {
+                    } else if (task.state === "FAILURE" || task.state === "REVOKED") {
                         throw new Error(task.error || "Audio generation failed.");
                     }
                 }
             } catch (error) {
                 status.textContent = `Error: ${error.message}`;
             } finally {
+                if (queued) {
+                    try {
+                        await refreshAnnouncementFileStatus();
+                    } catch (error) {
+                        status.textContent += ` ${error.message}`;
+                    }
+                }
                 button.disabled = false;
             }
         });

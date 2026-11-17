@@ -60,33 +60,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-async function loadAudio(button, url) {
-    try {
-        const cacheBustedUrl = `${url}?v=${new Date().getTime()}`;
-        const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
-
-        if (!response.ok) {
-            const icon = document.createElement('span');
-            icon.innerHTML = ' ❌ File not found';
-            icon.className = 'text-danger';
-            button.parentNode.replaceChild(icon, button);
-            return;
-        }
-
-        const audio = document.createElement('audio');
-        audio.controls = true;
-        audio.autoplay = true;
-
-        const source = document.createElement('source');
-        source.src = cacheBustedUrl;
-        source.type = 'audio/mpeg';
-
-        audio.appendChild(source);
-        button.parentNode.replaceChild(audio, button);
-    } catch (error) {
-        console.error("Error checking audio file:", error);
-    }
-}
-</script>
+{% include "logviewer/announcement_picker_script.html" %}
 {% endblock %}

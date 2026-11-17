@@ -56,8 +56,15 @@
       data-start-url="{% url 'regenerate-artist-audio-start' artist.pk %}"
       method="post">
     {% csrf_token %}
+    <p>Generate missing files or regenerate all selected files using the voice selected in
+      <a href="{% url 'utility-settings' %}">Utilities &gt; Settings</a>.
+      80s show announcements always use Microsoft Emma DragonHD.
+      Regenerating all selected files overwrites existing recordings.
+      Generation may incur speech service charges.
+      Year-based varieties are skipped for tracks without a year.</p>
+    {% bootstrap_form audio_form %}
     <button class="btn btn-xs btn-info" type="submit" id="regenerate-button">
-        Regenerate All Audio
+        Start generation
     </button>
     </form>
 
@@ -76,40 +83,7 @@
 
 {% block scripts %}
 
-    <script>
-    async function loadAudio(button, url) {
-        try {
-            // Append a timestamp to bust the cache
-            const cacheBustedUrl = `${url}?v=${new Date().getTime()}`;
-            
-            // Perform a lightweight HEAD request to check if the file exists
-            const response = await fetch(cacheBustedUrl, { method: 'HEAD' });
-            
-            if (!response.ok) {
-                const icon = document.createElement('span');
-                icon.innerHTML = ' ❌ File not found';
-                icon.className = 'text-danger';
-                button.parentNode.replaceChild(icon, button);
-                return;
-            }
-            
-            const audio = document.createElement('audio');
-            audio.controls = true;
-            audio.autoplay = true;
-            
-            const source = document.createElement('source');
-            // Use the cache-busted URL for the audio source as well
-            source.src = cacheBustedUrl;
-            source.type = 'audio/mpeg';
-            
-            audio.appendChild(source);
-            button.parentNode.replaceChild(audio, button);
-            
-        } catch (error) {
-            console.error("Error checking audio file:", error);
-        }
-    }
-    </script>
+    {% include "logviewer/announcement_picker_script.html" %}
     <script>
       const form = document.getElementById("regenerate-form");
       const button = document.getElementById("regenerate-button");
@@ -120,10 +94,14 @@
 
       form.addEventListener("submit", async (event) => {
           event.preventDefault();
+          if (form.querySelector('[name="mode"]:checked')?.value === "regenerate"
+              && !window.confirm("Overwrite the selected announcements for this artist?")) {
+              return;
+          }
 
           button.disabled = true;
           area.hidden = false;
-          message.textContent = "Starting regeneration...";
+          message.textContent = "Starting generation...";
 
           try {
               const response = await fetch(form.dataset.startUrl, {
@@ -133,15 +111,15 @@
                           "[name=csrfmiddlewaretoken]"
                       ).value,
                   },
+                  body: new FormData(form),
               });
 
+              const data = await response.json();
               if (!response.ok) {
-                  throw new Error("Could not start regeneration.");
+                  throw new Error(data.error || "Could not start generation.");
               }
 
-              const { task_id } = await response.json();
-
-              await pollProgress(task_id);
+              await pollProgress(data.task_id);
           } catch (error) {
               message.textContent = error.message;
               button.disabled = false;
@@ -163,7 +141,7 @@
 
               if (data.state === "PROGRESS" || data.state === "SUCCESS") {
                   const total = data.total || 0;
-                  const completed = data.completed || 0;
+                  const completed = (data.completed || 0) + (data.skipped || 0);
                   const percent = total
                       ? Math.round(completed / total * 100)
                       : 0;
@@ -179,20 +157,23 @@
                           const item = document.createElement("li");
                           item.textContent =
                               `${track.name}: ${track.status} ` +
-                              `(${track.completed}/2 announcements)`;
+                              `(${track.completed} generated, ${track.skipped} skipped of ${track.total})` +
+                              (track.error ? `: ${track.error}` : "");
                           statuses.appendChild(item);
                       }
                   }
               }
 
               if (data.state === "SUCCESS") {
-                  message.textContent = "Regeneration finished.";
+                  const failures = Object.values(data.tracks || {}).filter(track => track.status === "failed").length;
+                  message.textContent = `Generation finished: ${data.completed} generated, ${data.skipped} skipped` +
+                      (failures ? `, ${failures} track(s) failed.` : ".");
                   button.disabled = false;
                   return;
               }
 
               if (data.state === "FAILURE") {
-                  message.textContent = data.error || "Regeneration failed.";
+                  message.textContent = data.error || "Generation failed.";
                   button.disabled = false;
                   return;
               }

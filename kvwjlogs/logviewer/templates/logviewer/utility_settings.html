@@ -1,0 +1,60 @@
+{% extends "logviewer/base.html" %}
+{% load django_bootstrap5 %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+    <h1>Settings</h1>
+    {% if saved %}
+        <p class="alert alert-success" role="status">Settings saved.</p>
+    {% endif %}
+    <section aria-labelledby="track-audio-heading">
+        <h2 class="h4" id="track-audio-heading">Track and artist announcement regeneration</h2>
+        <p>These settings apply to everyone and may affect speech service charges.
+            Category generation uses its own voice selection.</p>
+        {% if invalid_saved %}
+            <p class="alert alert-warning">A saved voice does not match its announcement set.
+                Select a valid voice for each shift and save before regenerating.</p>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="section" value="voices">
+            <h3 class="h5">Shift 1 announcements (female)</h3>
+            {% bootstrap_form female_form %}
+            <h3 class="h5">Shift 2 announcements (male)</h3>
+            {% bootstrap_form male_form %}
+            <h3 class="h5">Shift 3 announcements (male)</h3>
+            {% bootstrap_form second_male_form %}
+            <button type="submit" class="btn btn-primary">Save settings</button>
+        </form>
+    </section>
+    <section class="mt-4" aria-labelledby="shift-heading">
+        <h2 class="h4" id="shift-heading">Announcement shift times</h2>
+        <p>Times use America/Denver and repeat daily. Changes take effect on the next playback update.</p>
+        <p>During the Saturday 80s show, categories containing "80s" use Microsoft Emma DragonHD.
+            An end time earlier than the start means the show ends on Sunday.</p>
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="section" value="shifts">
+            {% bootstrap_form shift_form %}
+            <button type="submit" class="btn btn-primary">Save shift times</button>
+        </form>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+    {{ gender_voice_choices|json_script:"gender-voice-choices" }}
+    <script>
+        const voiceChoices = JSON.parse(document.getElementById("gender-voice-choices").textContent);
+        for (const [prefix, gender] of [["female", "female"], ["male", "male"], ["male_2", "male"]]) {
+            const provider = document.getElementById(`id_${prefix}-provider`);
+            const voice = document.getElementById(`id_${prefix}-voice`);
+            provider.addEventListener("change", () => {
+                voice.replaceChildren();
+                for (const [value, label] of voiceChoices[gender][provider.value]) {
+                    voice.add(new Option(label, value));
+                }
+            });
+        }
+    </script>
+{% endblock %}

@@ -6,12 +6,24 @@
 {% block content %}
     <h1>Announcements</h1>
     <p>Generate announcement files for the selected category using the display names
-        for each track and artist. Year-based announcements are skipped when no year is available.</p>
+        for each track and artist. Select one voice set per job and a matching voice.
+        80s show announcements require Microsoft Emma DragonHD.
+        Year-based announcements are skipped when no year is available.</p>
     <form method="post" id="category-audio-form">
         {% csrf_token %}
         {% bootstrap_form form %}
+        <div class="mb-3">
+            <p id="preview-track-info" role="status">Selecting a preview track...</p>
+            <button type="button" class="btn btn-outline-secondary" id="choose-preview-track">Choose another track</button>
+            <button type="button" class="btn btn-outline-secondary" id="preview-button" disabled>Generate voice preview</button>
+            <p class="text-muted mt-2">The selected track stays the same until you choose another.
+                A new sample uses the selected service and voice and may incur charges.
+                It does not change saved announcements.</p>
+            <p id="preview-message" role="status"></p>
+            <audio id="preview-audio" controls hidden></audio>
+        </div>
         <p class="text-muted">Regeneration overwrites existing selected files.
-            Generation uses the OpenAI API and may incur charges.</p>
+            Generation uses the selected speech service and may incur charges.</p>
         <button type="submit" class="btn btn-primary" id="generate-button">Start generation</button>
     </form>
 
@@ -27,7 +39,94 @@
 {% endblock %}
 
 {% block scripts %}
+{% include "logviewer/speech_voice_options.html" %}
 <script>
+    const previewButton = document.getElementById("preview-button");
+    const previewMessage = document.getElementById("preview-message");
+    const previewAudio = document.getElementById("preview-audio");
+    const previewTrackInfo = document.getElementById("preview-track-info");
+    const choosePreviewTrack = document.getElementById("choose-preview-track");
+    let previewTrack = null;
+    let previewUrl = null;
+
+    async function selectPreviewTrack() {
+        previewButton.disabled = true;
+        choosePreviewTrack.disabled = true;
+        if (!previewTrack) previewTrackInfo.textContent = "Selecting a preview track...";
+        try {
+            const url = new URL("{% url 'random-preview-track' %}", window.location.origin);
+            if (previewTrack) url.searchParams.set("exclude", previewTrack.track_id);
+            const response = await fetch(url, {cache: "no-store"});
+            const track = await response.json();
+            if (!response.ok) throw new Error(track.error || "Could not select a preview track.");
+            previewTrack = track;
+            previewTrackInfo.textContent = `Preview track: ${track.track_title} - ${track.track_artist}`;
+            previewAudio.pause();
+            previewAudio.hidden = true;
+            previewMessage.textContent = "";
+        } catch (error) {
+            if (previewTrack) {
+                previewMessage.textContent = error.message || "Could not select another track.";
+            } else {
+                previewTrackInfo.textContent = error.message || "Could not select a preview track.";
+            }
+        } finally {
+            previewButton.disabled = !previewTrack;
+            choosePreviewTrack.disabled = false;
+        }
+    }
+
+    choosePreviewTrack.addEventListener("click", selectPreviewTrack);
+    selectPreviewTrack();
+    previewButton.addEventListener("click", async () => {
+        previewButton.disabled = true;
+        choosePreviewTrack.disabled = true;
+        previewAudio.hidden = true;
+        previewMessage.textContent = "Generating preview...";
+        const selectedProvider = providerSelect.options[providerSelect.selectedIndex].text;
+        const selectedVoice = voiceSelect.options[voiceSelect.selectedIndex].text;
+        try {
+            const formData = new FormData();
+            formData.append("provider", providerSelect.value);
+            formData.append("voice", voiceSelect.value);
+            formData.append("track_id", previewTrack.track_id);
+            formData.append("csrfmiddlewaretoken", document.querySelector('[name="csrfmiddlewaretoken"]').value);
+            const response = await fetch("{% url 'voice-preview' %}", {method: "POST", body: formData});
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "Could not start preview.");
+            }
+            const statusUrl = "{% url 'audio-task-status' 'PREVIEW_TASK_ID' %}".replace("PREVIEW_TASK_ID", data.task_id);
+            while (true) {
+                const statusResponse = await fetch(statusUrl, {cache: "no-store"});
+                if (!statusResponse.ok) {
+                    throw new Error("Could not retrieve preview status.");
+                }
+                const status = await statusResponse.json();
+                if (status.state === "FAILURE" || status.state === "REVOKED") {
+                    throw new Error(status.error || "Preview generation stopped.");
+                }
+                if (status.state === "SUCCESS") {
+                    const bytes = Uint8Array.from(atob(status.result.audio), c => c.charCodeAt(0));
+                    if (previewUrl) URL.revokeObjectURL(previewUrl);
+                    previewUrl = URL.createObjectURL(new Blob([bytes], {type: "audio/mpeg"}));
+                    previewAudio.src = previewUrl;
+                    previewAudio.hidden = false;
+                    const track = status.result.track_title && status.result.track_artist
+                        ? `${status.result.track_title} - ${status.result.track_artist}`
+                        : "Track details unavailable";
+                    previewMessage.textContent = `Ready to play: ${track} (${selectedProvider} / ${selectedVoice}).`;
+                    break;
+                }
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+        } catch (error) {
+            previewMessage.textContent = error.message || "Could not generate preview.";
+        } finally {
+            previewButton.disabled = false;
+            choosePreviewTrack.disabled = false;
+        }
+    });
     document.getElementById("category-audio-form").addEventListener("submit", (event) => {
         if (document.querySelector('[name="mode"]:checked')?.value === "regenerate"
             && !window.confirm("Overwrite the selected announcement files for this category?")) {

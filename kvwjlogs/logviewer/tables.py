@@ -4,22 +4,42 @@ import django_tables2 as tables
 from .models import Playback, Track, Artist, Log
 from django.urls import reverse
 from django.utils.http import urlencode
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from .audio import ANNOUNCEMENT_SHIFT_CHOICES
 
 
-def announcement_button(track_id, num):
+def announcement_picker(track):
+    track_id = track.pk
+    def options(start, label):
+        return format_html_join(
+            "", '<option value="{}">{} {}</option>',
+            (
+                (f"/media/{track_id}-{num}~0.mp3", label, (num - 1) % 4 + 1)
+                for num in range(start, start + 4)
+            ),
+        )
+    category = track.categoryid.category if track.categoryid_id else ""
+    include_eighties = "80s" in (category or "").casefold()
+    groups = format_html_join(
+        "", '<optgroup label="{}">{}</optgroup>',
+        (
+            (label, options(index * 4 + 1, label))
+            for index, (voice_set, label) in enumerate(ANNOUNCEMENT_SHIFT_CHOICES)
+            if voice_set != "eighties" or include_eighties
+        ),
+    )
     return format_html(
-        '<button type="button" class="btn btn-light btn-sm play-btn" '
-        'onclick="loadAudio(this, \'{}\')">Play</button>',
-        f"/media/{track_id}-{num}~0.mp3",
+        '<div class="announcement-picker">'
+        '<select aria-label="Announcement for track {}" class="form-select form-select-sm">'
+        '{}</select>'
+        '<button type="button" class="btn btn-light btn-sm" onclick="playSelectedAnnouncement(this)">Play</button>'
+        '<audio controls hidden></audio><span role="status" class="text-danger"></span></div>',
+        track_id, groups,
     )
 
 
 class PlaybackTable(tables.Table):
-    announcement_1 = tables.Column(empty_values=(), verbose_name="Announcement 1")
-    announcement_2 = tables.Column(empty_values=(), verbose_name="Announcement 2")
-    announcement_3 = tables.Column(empty_values=(), verbose_name="Announcement 3", exclude_from_export=True)
-    announcement_4 = tables.Column(empty_values=(), verbose_name="Announcement 4", exclude_from_export=True)
+    announcements = tables.Column(empty_values=(), verbose_name="Announcements", exclude_from_export=True, orderable=False)
     category = tables.Column(
         accessor="trackid__categoryid__category",
         verbose_name="Category",
@@ -81,17 +101,8 @@ class PlaybackTable(tables.Table):
             return record.trackid.yearid.year
         return "—"
 
-    def render_announcement_1(self, record):
-        return announcement_button(record.trackid.pk, 1)
-
-    def render_announcement_2(self, record):
-        return announcement_button(record.trackid.pk, 2)
-
-    def render_announcement_3(self, record):
-        return announcement_button(record.trackid.pk, 3)
-
-    def render_announcement_4(self, record):
-        return announcement_button(record.trackid.pk, 4)
+    def render_announcements(self, record):
+        return announcement_picker(record.trackid)
 
     def value_artist(self, record):
         artist = record.trackid.artistid
@@ -106,14 +117,11 @@ class PlaybackTable(tables.Table):
         model = Playback
         fields = (
             "category", "artist", "track_name", "year", "date", "timestamp",
-            "announcement_1", "announcement_2", "announcement_3", "announcement_4",
+            "announcements",
         )
 
 class TracksTable(tables.Table):
-    announcement_1 = tables.Column(empty_values=(), verbose_name="Announcement 1")
-    announcement_2 = tables.Column(empty_values=(), verbose_name="Announcement 2")
-    announcement_3 = tables.Column(empty_values=(), verbose_name="Announcement 3", exclude_from_export=True)
-    announcement_4 = tables.Column(empty_values=(), verbose_name="Announcement 4", exclude_from_export=True)
+    announcements = tables.Column(empty_values=(), verbose_name="Announcements", exclude_from_export=True, orderable=False)
     category = tables.Column(
         accessor="categoryid__category",
         verbose_name="Category",
@@ -175,17 +183,8 @@ class TracksTable(tables.Table):
             return record.yearid.year
         return "—"
 
-    def render_announcement_1(self, record):
-        return announcement_button(record.pk, 1)
-
-    def render_announcement_2(self, record):
-        return announcement_button(record.pk, 2)
-
-    def render_announcement_3(self, record):
-        return announcement_button(record.pk, 3)
-
-    def render_announcement_4(self, record):
-        return announcement_button(record.pk, 4)
+    def render_announcements(self, record):
+        return announcement_picker(record)
 
     class Meta:
         model = Track
@@ -194,10 +193,7 @@ class TracksTable(tables.Table):
             "artist",
             "track_name",
             "year",
-            "announcement_1",
-            "announcement_2",
-            "announcement_3",
-            "announcement_4",
+            "announcements",
         )
         attrs = {
             "class": "table table-sm table-hover",
