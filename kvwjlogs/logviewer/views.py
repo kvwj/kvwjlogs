@@ -2,14 +2,17 @@ from django.shortcuts import render
 
 # Create your views here.
 
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse, StreamingHttpResponse
 
 
 #def index(request):
 #    return HttpResponse("Hello, world. You're at the log viewer index.")
 
 from datetime import datetime, timedelta
+import csv
 import logging
+import os
+import re
 import stat
 from kombu.exceptions import KombuError
 
@@ -35,6 +38,8 @@ from .tasks import (
     generate_voice_preview, preview_tracks,
 )
 from .filters import ArtistFilter, TrackFilter, PlaybackFilter
+from .music_overlap import MUSIC_LIBRARY_FOLDERS, find_track_audio, scan_music_overlap
+from django.conf import settings as django_settings
 
 import django_filters
 from django_filters.views import FilterView
@@ -55,6 +60,128 @@ from kvwjlogs.celery import app
 
 fourweeksago = datetime.now() - timedelta(days=29)
 fourweeksago_str = fourweeksago.strftime('%Y-%m-%d')
+
+
+class AudioRange:
+    def __init__(self, audio, length):
+        self.audio = audio
+        self.remaining = length
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self.remaining:
+            raise StopIteration
+        chunk = self.audio.read(min(65536, self.remaining))
+        if not chunk:
+            raise OSError("The music file ended before the requested range.")
+        self.remaining -= len(chunk)
+        return chunk
+
+    def close(self):
+        self.audio.close()
+
+
+@require_http_methods(["GET", "HEAD"])
+@never_cache
+def track_audio(request, pk):
+    track = get_object_or_404(Track.objects.select_related("categoryid"), pk=pk)
+    try:
+        path = find_track_audio(
+            django_settings.MUSIC_LIBRARY_ROOT, track.filename,
+            track.categoryid.category if track.categoryid_id else None,
+        )
+        audio = path.open("rb")
+    except ValueError as error:
+        logging.getLogger(__name__).warning("Cannot identify audio for track %s: %s", pk, error)
+        return JsonResponse({"error": str(error)}, status=409)
+    except FileNotFoundError:
+        logging.getLogger(__name__).warning("Audio file or library is missing for track %s.", pk)
+        return JsonResponse({"error": "The music library or track file is missing."}, status=404)
+    except OSError:
+        logging.getLogger(__name__).exception("Could not read music for track %s.", pk)
+        return JsonResponse({"error": "Could not read the music library. Check the mount and permissions."}, status=503)
+
+    try:
+        size = os.fstat(audio.fileno()).st_size
+        start, end = 0, size - 1
+        requested_range = request.headers.get("Range") if request.method == "GET" else None
+        if requested_range:
+            match = re.fullmatch(r"bytes=([0-9]{0,20})-([0-9]{0,20})", requested_range)
+            if match and any(match.groups()):
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = min(int(last), end) if last else end
+                else:
+                    start = max(0, size - int(last))
+            if not match or not any(match.groups()) or start > end or start >= size:
+                audio.close()
+                response = HttpResponse(status=416)
+                response["Content-Range"] = f"bytes */{size}"
+                return response
+        length = max(0, end - start + 1)
+        if request.method == "HEAD":
+            audio.close()
+            response = HttpResponse(content_type="audio/mpeg")
+        elif requested_range:
+            audio.seek(start)
+            response = StreamingHttpResponse(AudioRange(audio, length), content_type="audio/mpeg")
+        else:
+            response = FileResponse(audio, content_type="audio/mpeg")
+        if requested_range:
+            response.status_code = 206
+            response["Content-Range"] = f"bytes {start}-{end}/{size}"
+        response["Content-Length"] = str(length)
+        response["Accept-Ranges"] = "bytes"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    except (OSError, ValueError):
+        audio.close()
+        logging.getLogger(__name__).exception("Could not stream music for track %s.", pk)
+        return JsonResponse({"error": "Could not stream the music file."}, status=503)
+
+
+@require_http_methods(["GET", "POST"])
+@never_cache
+def music_overlap_report(request):
+    report = None
+    error = None
+    status = 200
+    if request.method == "POST":
+        try:
+            report = scan_music_overlap(
+                django_settings.MUSIC_LIBRARY_ROOT,
+                Track.objects.select_related("artistid", "categoryid").iterator(),
+            )
+        except OSError:
+            logging.getLogger(__name__).exception("Could not scan the music library.")
+            error = "Could not scan the music library. Check the share mount and permissions."
+            status = 503
+        if request.POST.get("format") == "csv" and report is not None:
+            if report["errors"]:
+                error = "Some files have ambiguous database matches or unrecognized filenames. Resolve them before downloading a complete report."
+                status = 422
+            else:
+                response = HttpResponse(content_type="text/csv")
+                response["Content-Disposition"] = 'attachment; filename="80s-category-overlap.csv"'
+                writer = csv.writer(response)
+                writer.writerow(["Artist", "Song", "80s file paths", "Other category file paths"])
+                for song in report["songs"]:
+                    cells = [
+                        song["artist"], song["title"],
+                        "\n".join(song["eighties_paths"]), "\n".join(song["other_paths"]),
+                    ]
+                    writer.writerow([
+                        "'" + cell if cell.lstrip().startswith(("=", "+", "-", "@")) else cell
+                        for cell in cells
+                    ])
+                return response
+    return render(request, "logviewer/music_overlap_report.html", {
+        "report": report, "error": error, "root": django_settings.MUSIC_LIBRARY_ROOT,
+        "music_folders": MUSIC_LIBRARY_FOLDERS,
+    }, status=status)
 
 
 @require_http_methods(["GET", "POST"])
@@ -422,7 +549,12 @@ class FilteredPlaybackListView(PerPageMixin, ExportMixin, SingleTableMixin, Filt
             "trackid__artistid",
             "trackid__categoryid",
             "trackid__yearid",
+            "category_snapshot",
         ).annotate(
+            playback_category=Coalesce(
+                "category_snapshot__category", "trackid__categoryid__category",
+                Value("", output_field=models.TextField()),
+            ),
             artist_sort_name=Coalesce(
                 NullIf(
                     "trackid__artistid__artist_display_name",
@@ -535,7 +667,26 @@ class FilteredLogListView(PerPageMixin, ExportMixin, SingleTableMixin, FilterVie
         kwargs["request"] = self.request
         return kwargs
 
-def announcement_file_statuses(track_id):
+def announcement_file_statuses(track):
+    track_id = track.pk
+    category = track.categoryid.category if track.categoryid_id else ""
+    include_eighties = "80s" in (category or "").casefold()
+    settings = UtilitySettings.objects.filter(pk=1).first() or UtilitySettings()
+    voice_labels = {
+        provider: dict(voices) for provider, voices in SPEECH_VOICES.items()
+    }
+    voice_labels["microsoft"].update(LEGACY_MICROSOFT_VOICES)
+    shifts = (
+        ("Morning", settings.track_speech_provider, settings.track_speech_voice),
+        ("Afternoon", settings.male_track_speech_provider, settings.male_track_speech_voice),
+        ("Night", settings.second_male_track_speech_provider, settings.second_male_track_speech_voice),
+        ("80s show", EIGHTIES_SHOW_PROVIDER, EIGHTIES_SHOW_VOICE),
+    )
+    shift_labels = []
+    for name, provider, voice in shifts:
+        voice_label = voice_labels.get(provider, {}).get(voice, voice or "Unknown voice")
+        voice_label = voice_label.removesuffix(" (female)").removesuffix(" (male)")
+        shift_labels.append(f"{name} ({voice_label})")
     records = {
         record.variant: record
         for record in AnnouncementVoice.objects.filter(track_id=track_id)
@@ -556,7 +707,7 @@ def announcement_file_statuses(track_id):
         directory_available = False
 
     statuses = []
-    for num in range(1, 17):
+    for num in range(1, 17 if include_eighties else 13):
         label = labels[(num - 1) % 4]
         display = "File status unavailable"
         if directory_available:
@@ -576,10 +727,7 @@ def announcement_file_statuses(track_id):
                 record = records.get(num)
                 if record and record.provider:
                     provider = providers.get(record.provider, record.provider)
-                    voices = dict(SPEECH_VOICES.get(record.provider, ()))
-                    if record.provider == "microsoft":
-                        voices.update(LEGACY_MICROSOFT_VOICES)
-                    voice = voices.get(
+                    voice = voice_labels.get(record.provider, {}).get(
                         record.voice, record.voice or "Unknown voice",
                     )
                     display = f"File exists: {provider} / {voice}"
@@ -587,7 +735,7 @@ def announcement_file_statuses(track_id):
                     display = "File exists: service and voice unknown"
         statuses.append({
             "number": num, "label": label, "display": display,
-            "shift": f"Shift {(num - 1) // 4 + 1}" if num <= 12 else "80s show",
+            "shift": shift_labels[(num - 1) // 4],
             "variety": (num - 1) % 4 + 1,
             "requires_year": (num - 1) % 4 + 1 in (3, 4),
         })
@@ -597,7 +745,7 @@ def announcement_file_statuses(track_id):
 @require_GET
 def track_announcement_status(request, pk):
     track = get_object_or_404(Track, pk=pk)
-    return JsonResponse({"announcements": announcement_file_statuses(track.pk)})
+    return JsonResponse({"announcements": announcement_file_statuses(track)})
 
 
 def track_and_artist_edit(request, pk):
@@ -669,7 +817,7 @@ def track_and_artist_edit(request, pk):
             "artist": artist,
             "track_form": track_form,
             "artist_form": artist_form,
-            "announcements": announcement_file_statuses(track.pk),
+            "announcements": announcement_file_statuses(track),
         },
     )
 

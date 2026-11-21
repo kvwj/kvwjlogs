@@ -6,7 +6,7 @@ from .models import Artist, Track, Playback
 
 class PlaybackFilter(django_filters.FilterSet):
     category = django_filters.CharFilter(
-        field_name="trackid__categoryid__category",
+        field_name="playback_category",
         lookup_expr="icontains",
         label="Category",
     )

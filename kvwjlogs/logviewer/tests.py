@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from xml.etree import ElementTree
 
 import requests
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.test import SimpleTestCase
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch, call
 from kombu.exceptions import OperationalError
 
 from .models import RdsDisplayState, UtilitySettings
+from .music_overlap import MUSIC_LIBRARY_FOLDERS, find_track_audio, scan_music_overlap
 from .tasks import generate_category_audio, regenerate_single_audio, regenerate_artist_audio
 from .forms import ArtistAudioForm, CategoryAudioForm
 from .views import category_audio
@@ -32,6 +33,393 @@ from django.core.management.base import CommandError
 from django.db import DatabaseError
 from django.apps import apps
 from django.db import connection
+
+
+class MusicOverlapTests(SimpleTestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        for folder in MUSIC_LIBRARY_FOLDERS:
+            (self.root / folder).mkdir(parents=True, exist_ok=True)
+        self.tracks = []
+        catalog_patch = patch("logviewer.views.Track.objects.select_related")
+        catalog_patch.start().return_value.iterator.side_effect = lambda: iter(self.tracks)
+        self.addCleanup(catalog_patch.stop)
+
+    def add_file(self, relative, *, title=None, artist=None):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"unchanged audio")
+        if title is None or artist is None:
+            parts = path.stem.split(" - ", 1) if "80s" in path.parent.name.casefold() else path.stem.rsplit(" - ", 2)
+            if "80s" in path.parent.name.casefold() and len(parts) == 2:
+                artist, title = parts
+            elif len(parts) == 3:
+                title, artist, _ = parts
+        if title is not None and artist is not None:
+            self.tracks.append(Track(
+                filename=path.name, track_name=title,
+                artistid=Artist(pk=1, artist_name=artist),
+                categoryid=Category(pk=1, category=path.parent.name),
+            ))
+        return str(path)
+
+    def test_scan_matches_all_copies_by_title_artist_not_year(self):
+        eighties = self.add_file("pls/That 80s Show/80s Rock/Artist - Title.mp3")
+        other = self.add_file("ye olde new gold/playback/clockwheel rotation/A power oldie/ title  -  ARTIST  - 1985.mp3")
+        another = self.add_file("pls/Day Only/Title - Artist - 1986.MP3")
+        self.add_file("pls/Night only/Title - Different artist - 1985.mp3")
+        self.add_file("pls/That 80s Show/80s Pop/Someone - Other song.mp3")
+        self.add_file("pls/Day Only/Sunday/No artist.mp3")
+        self.add_file("pls/Day Only/Special Liners/Station.mp3")
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["songs"]), 1)
+        self.assertEqual(result["songs"][0]["eighties_paths"], [eighties])
+        self.assertEqual(set(result["songs"][0]["other_paths"]), {other, another})
+        self.assertEqual(Path(eighties).read_bytes(), b"unchanged audio")
+        self.assertEqual(result["scanned"], 5)
+
+    def test_bad_names_and_inaccessible_root_are_not_silent(self):
+        bad = self.add_file("ye olde new gold/playback/clockwheel rotation/A power oldie/not a valid name.mp3")
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [bad])
+        with self.assertRaises(OSError):
+            scan_music_overlap(self.root / "missing", self.tracks)
+        with patch("logviewer.music_overlap.os.walk", side_effect=PermissionError("unreadable")):
+            with self.assertRaises(PermissionError):
+                scan_music_overlap(self.root, self.tracks)
+
+    def test_page_and_csv_show_paths_and_report_failures(self):
+        eighties = self.add_file("pls/That 80s Show/80s Rock/=Artist - Title.mp3")
+        other = self.add_file("ye olde new gold/playback/clockwheel rotation/A power oldie/Title - =Artist - 1985.mp3")
+        with self.settings(MUSIC_LIBRARY_ROOT=str(self.root)):
+            response = self.client.get(reverse("music-overlap-report"))
+            self.assertContains(response, "Scan and show report")
+            response = self.client.post(reverse("music-overlap-report"), {"format": "html"})
+            self.assertContains(response, eighties)
+            self.assertContains(response, other)
+            response = self.client.post(reverse("music-overlap-report"), {"format": "csv"})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("attachment", response["Content-Disposition"])
+            self.assertIn("'=Artist", response.content.decode())
+            self.add_file("ye olde new gold/playback/clockwheel rotation/A power oldie/malformed.mp3")
+            response = self.client.post(reverse("music-overlap-report"), {"format": "csv"})
+            self.assertEqual(response.status_code, 422)
+            self.assertContains(response, "report is incomplete", status_code=422)
+        with self.settings(MUSIC_LIBRARY_ROOT=str(self.root / "missing")), self.assertLogs(
+            "logviewer.views", level="ERROR",
+        ):
+            response = self.client.post(reverse("music-overlap-report"))
+        self.assertEqual(response.status_code, 503)
+
+    def test_unlisted_folders_are_not_traversed_or_reported(self):
+        self.add_file("ye olde new gold/playback/clockwheel rotation/A power oldie/Title - Artist - 1985.mp3")
+        self.add_file("pls/That 80s Show/80s Rock/Artist - Title.mp3")
+        excluded = (
+            "backups/80s Rock/Artist - Title.mp3",
+            "ye olde new gold/unlisted/malformed.mp3",
+            "ye olde new gold/A power oldie/malformed.mp3",
+            "pls/unused/malformed.mp3",
+        )
+        for path in excluded:
+            self.add_file(path)
+        with patch("logviewer.music_overlap.os.walk", wraps=os.walk) as walk:
+            result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(
+            [call.args[0] for call in walk.call_args_list],
+            [self.root / folder for folder in MUSIC_LIBRARY_FOLDERS],
+        )
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["songs"]), 1)
+        self.assertEqual(len(result["songs"][0]["eighties_paths"]), 1)
+
+    def test_missing_approved_folder_fails_instead_of_returning_partial_results(self):
+        missing = self.root / "ye olde new gold/playback/clockwheel rotation/K christmas-holiday"
+        missing.rmdir()
+        with self.assertRaisesMessage(FileNotFoundError, str(missing)):
+            scan_music_overlap(self.root, self.tracks)
+
+    def test_display_names_match_mono_filename_and_ignore_stale_catalog_rows(self):
+        eighties = self.add_file(
+            "pls/That 80s Show/80s CHR/Eurythmics - Here Comes The Rain Again.mp3",
+            title="Here Comes The Rain Again", artist="Eurythmics",
+        )
+        regular = self.add_file(
+            "pls/Night only/Here Comes The Rain Again (mono) - Eurythmics - 1983.mp3",
+            title="Here Comes The Rain Again (mono)", artist="Eurythmics original artist",
+        )
+        self.tracks[-1].track_display_name = " Here Comes the Rain Again "
+        self.tracks[-1].artistid.artist_display_name = " EURYTHMICS "
+        with self.settings(MUSIC_LIBRARY_ROOT=str(self.root)):
+            response = self.client.post(reverse("music-overlap-report"), {"format": "html"})
+            self.assertContains(response, eighties)
+            self.assertContains(response, regular)
+            response = self.client.post(reverse("music-overlap-report"), {"format": "csv"})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(regular, response.content.decode())
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["songs"]), 1)
+        self.assertEqual(result["songs"][0]["eighties_paths"], [eighties])
+        self.assertEqual(result["songs"][0]["other_paths"], [regular])
+        Path(regular).unlink()
+        self.assertEqual(scan_music_overlap(self.root, self.tracks)["songs"], [])
+
+    def test_files_without_catalog_rows_still_match_but_ambiguous_rows_are_reported(self):
+        path = self.add_file("pls/That 80s Show/80s CHR/Eurythmics - Here Comes The Rain Again.mp3")
+        regular = self.add_file(
+            "pls/Night only/Here Comes The Rain Again - Eurythmics - 1983.mp3",
+        )
+        self.tracks.clear()
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["songs"]), 1)
+        self.assertEqual(result["songs"][0]["eighties_paths"], [path])
+        self.assertEqual(result["songs"][0]["other_paths"], [regular])
+        self.add_file("pls/That 80s Show/80s CHR/Eurythmics - Here Comes The Rain Again.mp3")
+        self.add_file("pls/Night only/Here Comes The Rain Again - Eurythmics - 1983.mp3")
+        duplicate = Track(
+            filename=Path(regular).name, track_name="Different song",
+            artistid=Artist(pk=2, artist_name="Eurythmics"),
+            categoryid=Category(pk=2, category="Night only"),
+        )
+        self.tracks.append(duplicate)
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [regular])
+        self.assertEqual(result["songs"], [])
+
+    def test_missing_filenames_use_original_names_to_find_display_names(self):
+        eighties = self.add_file(
+            "pls/That 80s Show/80s CHR/Eurythmics - Here Comes The Rain Again.mp3",
+        )
+        regular = self.add_file(
+            "pls/Night only/Here Comes The Rain Again (mono) - Eurythmics - 1983.mp3",
+        )
+        self.tracks[-1].track_display_name = "Here Comes the Rain Again"
+        for filenames in ((None, ""), (None, Path(regular).name), (Path(eighties).name, None)):
+            with self.subTest(filenames=filenames):
+                for track, filename in zip(self.tracks, filenames):
+                    track.filename = filename
+                result = scan_music_overlap(self.root, self.tracks)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual(len(result["songs"]), 1)
+                self.assertEqual(result["songs"][0]["eighties_paths"], [eighties])
+                self.assertEqual(result["songs"][0]["other_paths"], [regular])
+        with self.settings(MUSIC_LIBRARY_ROOT=str(self.root)):
+            response = self.client.post(reverse("music-overlap-report"), {"format": "csv"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(regular, response.content.decode())
+        self.assertIsNone(self.tracks[-1].filename)
+
+    def test_conflicting_name_matches_without_filenames_are_not_guessed(self):
+        regular = self.add_file("pls/Night only/Title - Artist - 1983.mp3")
+        self.tracks[0].filename = None
+        self.tracks.append(Track(
+            track_name="Title", track_display_name="Different title",
+            artistid=self.tracks[0].artistid, categoryid=self.tracks[0].categoryid,
+        ))
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [regular])
+
+    def test_keeps_previous_six_and_three_display_name_matches_with_blank_filenames(self):
+        examples = (
+            ("Big Country", "In A Big Country", "In A Big Country", "In A Big Country"),
+            ("Blue Oyster Cult", "Burnin' for You", "Burnin' for You", "Burnin' for You"),
+            ("Cars", "Just What I Needed ", "Just What I Needed", "Just What I Needed"),
+            ("Cars", "Let's Go ", "Let's Go", "Let's Go"),
+            ("Eddie Money", "Baby Hold On", "Baby Hold On", "Baby Hold On"),
+            ("Elton John", "Empty Garden", "Empty Garden", "Empty Garden"),
+            ("Agnetha Faltskog", "Can't Shake Loose", "Can't Shake Loose (mono)", "Can't Shake Loose"),
+            ("Eurythmics", "Here Comes The Rain Again", "Here Comes The Rain Again (mono)", "Here Comes the Rain Again"),
+            ("Cars", "Candy-0", "Candy-O", "Candy-O"),
+        )
+        expected = set()
+        for artist, eighties_title, other_title, display_title in examples:
+            eighties = self.add_file(f"pls/That 80s Show/80s CHR/{artist} - {eighties_title}.mp3")
+            other_folder = (
+                "ye olde new gold/playback/clockwheel rotation/F image track"
+                if artist == "Elton John" else "pls/Night only"
+            )
+            regular = self.add_file(f"{other_folder}/{other_title} - {artist} - 1983.mp3")
+            for track, filename in zip(self.tracks[-2:], (None, "")):
+                track.filename = filename
+                track.track_display_name = display_title
+                if artist == "Cars":
+                    track.artistid.artist_display_name = "The Cars"
+            expected.add((eighties, regular))
+        result = scan_music_overlap(self.root, self.tracks)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["songs"]), 9)
+        self.assertEqual({
+            (song["eighties_paths"][0], song["other_paths"][0])
+            for song in result["songs"]
+        }, expected)
+
+
+class TrackAudioTests(SimpleTestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        for folder in MUSIC_LIBRARY_FOLDERS:
+            (self.root / folder).mkdir(parents=True, exist_ok=True)
+        self.track = Track(
+            pk=42, track_name="Title", filename="Artist - Title.mp3",
+            categoryid=Category(pk=1, category="80s Rock"),
+        )
+        self.path = self.root / "pls" / "That 80s Show" / "80s Rock" / self.track.filename
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(b"0123456789")
+        self.url = reverse("track-audio", args=[self.track.pk])
+        self.lookup = patch("logviewer.views.get_object_or_404", return_value=self.track)
+        self.lookup.start()
+        self.addCleanup(self.lookup.stop)
+        self.setting = self.settings(MUSIC_LIBRARY_ROOT=str(self.root))
+        self.setting.enable()
+        self.addCleanup(self.setting.disable)
+
+    def test_full_stream_head_and_seek_ranges(self):
+        response = self.client.get(self.url)
+        self.addCleanup(response.close)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "audio/mpeg")
+        self.assertEqual(response["Content-Length"], "10")
+        self.assertEqual(b"".join(response.streaming_content), b"0123456789")
+        response = self.client.head(self.url)
+        self.assertEqual(response["Content-Length"], "10")
+        self.assertEqual(response.content, b"")
+        for requested, expected, content_range in (
+            ("bytes=2-5", b"2345", "bytes 2-5/10"),
+            ("bytes=7-", b"789", "bytes 7-9/10"),
+            ("bytes=-3", b"789", "bytes 7-9/10"),
+            ("bytes=8-99", b"89", "bytes 8-9/10"),
+        ):
+            with self.subTest(requested=requested):
+                response = self.client.get(self.url, HTTP_RANGE=requested)
+                self.addCleanup(response.close)
+                self.assertEqual(response.status_code, 206)
+                self.assertEqual(response["Content-Range"], content_range)
+                self.assertEqual(int(response["Content-Length"]), len(expected))
+                self.assertEqual(b"".join(response.streaming_content), expected)
+        for requested in ("bytes=10-", "bytes=6-2", "bytes=-0", "bytes=-", "bytes=0-1,4-5"):
+            response = self.client.get(self.url, HTTP_RANGE=requested)
+            self.assertEqual(response.status_code, 416, requested)
+            self.assertEqual(response["Content-Range"], "bytes */10")
+        self.assertEqual(self.path.read_bytes(), b"0123456789")
+
+    def test_missing_ambiguous_and_unreadable_files_surface_errors(self):
+        self.path.unlink()
+        with self.assertLogs("logviewer.views", level="WARNING"):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 404)
+        self.path.write_bytes(b"audio")
+        other = self.root / "pls" / "That 80s Show" / "another" / "80s Rock" / self.track.filename
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"other")
+        with self.assertLogs("logviewer.views", level="WARNING"):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 409)
+        with patch("logviewer.views.find_track_audio", side_effect=PermissionError), self.assertLogs(
+            "logviewer.views", level="ERROR",
+        ):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 503)
+
+    def test_matching_is_category_specific_and_confined_to_library(self):
+        excluded = self.root / "backups" / "80s Rock" / self.track.filename
+        excluded.parent.mkdir(parents=True)
+        excluded.write_bytes(b"wrong recording")
+        self.assertEqual(find_track_audio(self.root, "ARTIST - TITLE.MP3", "80S ROCK"), self.path.resolve())
+        with self.assertRaises(FileNotFoundError):
+            find_track_audio(self.root, self.track.filename, "Other category")
+        with self.assertRaises(ValueError):
+            find_track_audio(self.root, "../Artist - Title.mp3", "80s Rock")
+        outside = TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        target = Path(outside.name) / "outside.mp3"
+        target.write_bytes(b"private")
+        self.path.unlink()
+        self.path.symlink_to(target)
+        with self.assertRaises(PermissionError):
+            find_track_audio(self.root, self.track.filename, "80s Rock")
+
+    def test_play_button_keeps_export_clean_and_never_preloads_audio(self):
+        table = TracksTable([self.track])
+        markup = table.render_track_name(self.track)
+        self.assertIn("Play song", markup)
+        self.assertIn(self.url, markup)
+        self.assertIn('preload="none"', markup)
+        self.assertEqual(table.value_track_name(self.track), "Title")
+        self.track.filename = None
+        markup = table.render_track_name(self.track)
+        self.assertNotIn("Play song", markup)
+        self.assertIn("No song filename", markup)
+
+
+class PlaybackCategoryTests(SimpleTestCase):
+    def test_playback_table_uses_snapshot_and_marks_inferred_history(self):
+        from .models import PlaybackCategory
+
+        track = Track(pk=42, categoryid=Category(pk=1, category="New category"))
+        record = Playback(pk=100, trackid=track)
+        record.playback_category = "Original category"
+        record.category_snapshot = PlaybackCategory(
+            playback=record, category="Original category", inferred=False,
+        )
+        table = PlaybackTable([record])
+        self.assertEqual(table.render_category(record), "Original category")
+        record.category_snapshot.inferred = True
+        self.assertEqual(table.render_category(record), "Original category (inferred)")
+
+
+class PlaybackCategoryQueryTests(TransactionTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from .models import Year
+        cls.catalog_models = (Year, Category, Artist, Track, Playback)
+        with connection.schema_editor() as editor:
+            for model in cls.catalog_models:
+                editor.create_model(model)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            with connection.schema_editor() as editor:
+                for model in reversed(cls.catalog_models):
+                    editor.delete_model(model)
+        finally:
+            super().tearDownClass()
+
+    def test_view_and_filter_keep_event_category_when_track_moves(self):
+        from .models import PlaybackCategory
+        from .views import FilteredPlaybackListView
+        from .filters import PlaybackFilter
+
+        original = Category.objects.create(category="Original")
+        new = Category.objects.create(category="New")
+        track = Track.objects.create(track_name="Title", categoryid=original)
+        captured = Playback.objects.create(trackid=track, date="2026-11-19", timestamp="01:00:00")
+        PlaybackCategory.objects.create(playback=captured, category="Original")
+        legacy = Playback.objects.create(trackid=track, date="2026-11-19", timestamp="02:00:00")
+        track.categoryid = new
+        track.save()
+        queryset = FilteredPlaybackListView().get_queryset()
+        records = {record.pk: record for record in queryset}
+        self.assertEqual(records[captured.pk].playback_category, "Original")
+        self.assertEqual(records[legacy.pk].playback_category, "New")
+        self.assertEqual(PlaybackTable([records[legacy.pk]]).render_category(records[legacy.pk]), "New (inferred)")
+        self.assertEqual(
+            list(PlaybackFilter({"category": "Original"}, queryset=queryset).qs.values_list("pk", flat=True)),
+            [captured.pk],
+        )
+        self.assertEqual(
+            list(PlaybackFilter({"category": "New"}, queryset=queryset).qs.values_list("pk", flat=True)),
+            [legacy.pk],
+        )
 
 
 class RdsOverrideTests(TestCase):
@@ -1112,6 +1500,10 @@ class ArtistAnnouncementChoicesTests(SimpleTestCase):
 
 class TrackAnnouncementStatusTests(SimpleTestCase):
     def setUp(self):
+        settings_patch = patch("logviewer.views.UtilitySettings.objects.filter")
+        self.settings_lookup = settings_patch.start()
+        self.settings_lookup.return_value.first.return_value = None
+        self.addCleanup(settings_patch.stop)
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
@@ -1133,6 +1525,7 @@ class TrackAnnouncementStatusTests(SimpleTestCase):
             (self.folder / f"42-{variant}~0.mp3").write_bytes(b"audio")
         self.track = Track(
             pk=42, track_name="Title", artistid=Artist(pk=7, artist_name="Artist"),
+            categoryid=Category(pk=1, category="80s Rock"),
             yearid_id=1966,
         )
         self.track_patch = patch("logviewer.views.get_object_or_404", return_value=self.track)
@@ -1151,6 +1544,28 @@ class TrackAnnouncementStatusTests(SimpleTestCase):
         self.assertContains(response, "Regenerate", count=16)
         for num in range(1, 17):
             self.assertContains(response, f'/media/42-{num}~0.mp3')
+        for label in (
+            "Morning (Nova DragonHD)", "Afternoon (Andrew DragonHD)",
+            "Night (Davis DragonHD)", "80s show (Emma DragonHD)",
+        ):
+            self.assertContains(response, label, count=4)
+
+    def test_shift_labels_use_assigned_voices_not_recorded_file_metadata(self):
+        from .views import track_and_artist_edit, track_announcement_status
+
+        self.settings_lookup.return_value.first.return_value = UtilitySettings(
+            track_speech_provider="openai", track_speech_voice="nova",
+            male_track_speech_provider="openai", male_track_speech_voice="ash",
+            second_male_track_speech_provider="microsoft", second_male_track_speech_voice="brian_dragon_hd",
+        )
+        expected = ("Morning (Nova)", "Afternoon (Ash)", "Night (Brian DragonHD)", "80s show (Emma DragonHD)")
+        response = track_and_artist_edit(RequestFactory().get("/"), 42)
+        for label in expected:
+            self.assertContains(response, label, count=4)
+        self.assertContains(response, "File exists: Microsoft Speech Service / Echo Turbo (male)")
+        response = track_announcement_status(RequestFactory().get("/"), 42)
+        statuses = json.loads(response.content)["announcements"]
+        self.assertEqual([row["shift"] for row in statuses], [label for label in expected for _ in range(4)])
 
     def test_status_endpoint_reports_current_files_and_ignores_stale_metadata(self):
         from .views import track_announcement_status
@@ -1197,7 +1612,7 @@ class TrackAnnouncementStatusTests(SimpleTestCase):
                 with self.subTest(voice=voice):
                     records.return_value = [SimpleNamespace(variant=1, provider="microsoft", voice=voice)]
                     self.assertEqual(
-                        announcement_file_statuses(42)[0]["display"],
+                        announcement_file_statuses(self.track)[0]["display"],
                         f"File exists: Microsoft Speech Service / {label}",
                     )
 
@@ -1224,6 +1639,31 @@ class TrackAnnouncementStatusTests(SimpleTestCase):
             [item["display"] for item in statuses],
             ["File status unavailable"] * 16,
         )
+
+    def test_eighties_announcements_only_appear_for_eighties_categories(self):
+        from .views import track_and_artist_edit, track_announcement_status
+
+        for category, include_eighties in (
+            (Category(pk=1, category="Classic 80S Rock"), True),
+            (Category(pk=2, category="Regular rotation"), False),
+            (None, False),
+        ):
+            with self.subTest(category=category):
+                self.track.categoryid = category
+                response = track_and_artist_edit(RequestFactory().get("/"), 42)
+                if include_eighties:
+                    self.assertContains(response, "80s show (Emma DragonHD)", count=4)
+                else:
+                    self.assertNotContains(response, "80s show")
+                    for num in range(13, 17):
+                        self.assertNotContains(response, f"/media/42-{num}~0.mp3")
+                self.assertContains(response, "Regenerate", count=16 if include_eighties else 12)
+                response = track_announcement_status(RequestFactory().get("/"), 42)
+                statuses = json.loads(response.content)["announcements"]
+                self.assertEqual(
+                    [row["number"] for row in statuses],
+                    list(range(1, 17 if include_eighties else 13)),
+                )
 
 
 class ArtistGenerationModeTests(SimpleTestCase):

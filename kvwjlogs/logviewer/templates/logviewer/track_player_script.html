@@ -1,0 +1,32 @@
+<script>
+async function playLibraryTrack(button) {
+    const player = button.closest(".track-player");
+    const audio = player.querySelector("audio");
+    const status = player.querySelector('[role="status"]');
+    status.textContent = "";
+    button.disabled = true;
+    audio.pause();
+    try {
+        const response = await fetch(button.dataset.audioUrl, {method: "HEAD"});
+        if (!response.ok) {
+            const messages = {
+                404: "Song file or music share missing. The track may have moved.",
+                409: "The filename/category is missing or matches multiple recordings.",
+                503: "Music share unavailable or unreadable."
+            };
+            throw new Error(messages[response.status] || "Could not access the song.");
+        }
+        document.querySelectorAll("audio").forEach(other => {
+            if (other !== audio) other.pause();
+        });
+        audio.onerror = () => { status.textContent = "Could not load the song audio."; };
+        if (!audio.getAttribute("src")) audio.src = button.dataset.audioUrl;
+        audio.hidden = false;
+        await audio.play();
+    } catch (error) {
+        status.textContent = error.message || "Could not play the song.";
+    } finally {
+        button.disabled = false;
+    }
+}
+</script>

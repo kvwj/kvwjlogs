@@ -83,7 +83,9 @@
             <h4>Audio Announcements</h4>
             <p class="text-muted">Regeneration uses the corresponding shift voice selected in
               <a href="{% url 'utility-settings' %}">Utilities &gt; Settings</a>.
-              80s show announcements always use Microsoft Emma DragonHD.</p>
+              {% if "80s" in track.categoryid.category|lower %}
+              80s show announcements always use Microsoft Emma DragonHD.
+              {% endif %}</p>
             
             {% for announcement in announcements %}
             <div class="audio-row" data-variant="{{ announcement.number }}">

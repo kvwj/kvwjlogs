@@ -135,6 +135,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = 'static/'
+MUSIC_LIBRARY_ROOT = os.getenv("MUSIC_LIBRARY_ROOT", "/mnt/songs")
 #STATIC_ROOT = "/var/www/example.com/static/"
 
 # Default primary key field type

@@ -1,0 +1,52 @@
+{% extends "logviewer/base.html" %}
+
+{% block title %}80s category overlap{% endblock %}
+
+{% block content %}
+<h1>80s category overlap</h1>
+<p>Scan {{ root }} for songs present in both an 80s category and another category.
+    Matches use database track and artist display names (or their original names when no
+    display name is set), ignoring case and surrounding whitespace.
+    Stored filenames and categories identify the files on disk. When no filename
+    match exists, filename titles and artists are used to look up database names.
+    Files without database matches can still match by their filename titles and artists.
+    Years are not compared. Sunday and Special Liners folders are excluded.</p>
+<details>
+    <summary>Included music folders (and their subfolders)</summary>
+    <ul>{% for folder in music_folders %}<li>{{ root }}/{{ folder }}</li>{% endfor %}</ul>
+</details>
+<p>This report does not change the database or delete files. Review the paths before removing
+    80s copies yourself. Different recordings with the same title and artist may match.</p>
+<form method="post">
+    {% csrf_token %}
+    <button class="btn btn-primary" name="format" value="html">Scan and show report</button>
+    <button class="btn btn-outline-primary" name="format" value="csv">Scan and download CSV</button>
+</form>
+{% if error %}<p class="alert alert-danger mt-3" role="alert">{{ error }}</p>{% endif %}
+{% if report %}
+<p class="mt-3" role="status">{{ report.scanned }} MP3 files scanned.
+    {{ report.songs|length }} songs match both category groups.</p>
+{% if report.errors %}
+<div class="alert alert-warning">
+    <p>This report is incomplete: these files have ambiguous database matches or
+        unrecognized filename formats.
+        CSV download is unavailable until they are resolved.</p>
+    <ul>{% for path in report.errors %}<li>{{ path }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+<div class="table-responsive">
+<table class="table table-sm">
+    <thead><tr><th>Artist</th><th>Song</th><th>80s copies</th><th>Other copies</th></tr></thead>
+    <tbody>
+    {% for song in report.songs %}
+    <tr>
+        <td>{{ song.artist }}</td><td>{{ song.title }}</td>
+        <td>{% for path in song.eighties_paths %}<div>{{ path }}</div>{% endfor %}</td>
+        <td>{% for path in song.other_paths %}<div>{{ path }}</div>{% endfor %}</td>
+    </tr>
+    {% empty %}<tr><td colspan="4">No matching songs found.</td></tr>{% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

@@ -10,7 +10,10 @@ announcement audio and setting the text shown by the RDS encoder.
   track, year, and date. The table includes audio controls for available
   announcements.
 - **Tracks** (`/tracks`): browse and filter the track catalog, edit display
-  names, and play available announcement files.
+  names, and play available announcement files. **Play song** beside a title
+  streams its MP3 from the mounted music library for identification, with
+  pause and seeking controls. The same control is available in artist track
+  listings; no music is loaded until you press Play song.
 - **Artists** (`/artists`): browse and filter artists, edit display names, and
   generate missing announcement files or regenerate all selected files for an
   artist. Regenerating overwrites existing selected recordings; missing-only
@@ -34,6 +37,9 @@ announcement audio and setting the text shown by the RDS encoder.
   `America/Denver` time zone, plus the Saturday 80s show start and end times.
   The show defaults to 9:00 PM through midnight and uses Microsoft Emma
   DragonHD for tracks in categories containing `80s`.
+- **Utilities > 80s category overlap**: scan the music share and display or
+  download a CSV of songs present in both 80s and regular category folders.
+  This is read-only: it does not insert catalog records or remove files.
 
 Announcement text variants are:
 
@@ -52,6 +58,11 @@ The 80s show (Emma) group appears only for tracks whose category contains
 `80s` (case-insensitive).
 The track edit page shows whether each file exists and its recorded service and
 voice, or indicates when that information is unknown or unavailable.
+Its Audio Announcements labels use Morning, Afternoon, Night, and 80s show,
+with the currently assigned shift voice. File-status text still identifies the
+voice used for the existing recording, which may differ from the current setting.
+The 80s show rows appear only for tracks in a category containing `80s`,
+case-insensitively; existing 80s recordings are not removed when hidden.
 
 ## Architecture
 
@@ -79,9 +90,10 @@ The application expects the existing PostgreSQL tables `playback`, `tracks`,
 Django and their models are marked `managed = False`; Django migrations do not
 create, alter, or delete them.
 
-The `RdsDisplayState`, `AnnouncementVoice`, and `UtilitySettings` models are
+The `RdsDisplayState`, `AnnouncementVoice`, `UtilitySettings`, and
+`PlaybackCategory` models are
 managed by Django. Their migrations create `rds_display_state`,
-`announcement_voice`, and `utility_settings`. For an existing deployment,
+`announcement_voice`, `utility_settings`, and `playback_category`. For an existing deployment,
 apply migrations after setting the production database environment:
 
 ```bash
@@ -110,6 +122,69 @@ Migration 0010 adds the third voice and replaces the existing shift schedule
 with 6:00 AM, noon, and 7:00 PM. Other saved voice choices, existing
 announcement files, and voice records are unchanged. Migration 0011 adds the
 Saturday show hours without changing the existing daily schedule.
+Migration 0012 adds `playback_category` snapshots for the playback importer.
+Apply it before deploying the updated `rds-scripts/insert_playback_events.py`.
+Playback categories are then captured from log entries rather than changing
+with the current track category. Earlier entries without a captured category
+use the last known category and are explicitly marked **inferred**; their
+original categories cannot be recovered from the catalog alone. The importer
+freezes that inferred value before moving the track to another category.
+
+## 80s category overlap report
+
+Mount the complete music library read-only into the web application at
+`/mnt/songs`, or set `MUSIC_LIBRARY_ROOT` to its mounted root. This is separate
+from the announcement audio mount. The existing standalone
+`scan_folders_insert_songs.py` is not used: it modifies the catalog.
+
+Both the report and song-player searches are restricted to these folders under
+the music mount, including their subfolders:
+
+- `ye olde new gold/playback/clockwheel rotation/A power oldie`
+- `ye olde new gold/playback/clockwheel rotation/B medium oldie`
+- `ye olde new gold/playback/clockwheel rotation/C slow oldie`
+- `ye olde new gold/playback/clockwheel rotation/D extra slow oldie`
+- `ye olde new gold/playback/clockwheel rotation/E beatles-beachboys-elvis`
+- `ye olde new gold/playback/clockwheel rotation/F image track`
+- `ye olde new gold/playback/clockwheel rotation/G golden oldie`
+- `ye olde new gold/playback/clockwheel rotation/J psychedelia`
+- `ye olde new gold/playback/clockwheel rotation/K christmas-holiday`
+- `pls/Day Only`
+- `pls/Night only`
+- `pls/That 80s Show`
+
+Other folders are not traversed. All listed folders must be present and readable;
+an unavailable folder fails the search instead of silently returning incomplete
+results. No folders or music files are reorganized.
+
+Song playback uses this same mount. It matches the track's stored MP3 basename
+and current category folder (including nested 80s folders), case-insensitively.
+Missing files or ambiguous copies produce an error rather than playing another
+category's recording. Files outside the configured library cannot be streamed.
+The endpoint supports byte ranges for seeking and streams without loading an
+entire song into memory. Music remains read-only.
+
+Use Utilities > 80s category overlap to scan and view results or download CSV.
+80s category names contain `80s`, case-insensitively. Files are identified by
+their stored database filename and category. Songs are matched using track and
+artist display names, falling back to original names when a display name is
+unset, just like the Tracks view. For example, a filename containing `(mono)`
+can match another recording if their database display names are the same.
+When no stored filename matches (including records with blank filenames),
+the scanner parses `Artist - Title.mp3` in 80s folders or
+`Title - Artist - Year.mp3` elsewhere. It uses the original title, artist, and
+category to find the database display names. If no database row matches,
+it retains the parsed title and artist so filesystem-only overlaps are included.
+Conflicting database identities are flagged rather than guessed. No filenames
+are written back to the database.
+Matches ignore case and surrounding whitespace, not punctuation; years are
+ignored. Files must still exist in the approved folders; stale database rows
+alone do not create a match. Sunday and Special Liners folders are excluded. The report lists all
+matching paths so you can review and remove the 80s copies yourself. Different
+recordings with the same title and artist may match. A missing share or read
+error fails the scan. MP3s with ambiguous database matches or unrecognized
+filename formats are listed and block CSV download
+to avoid presenting an incomplete report as complete.
 
 ## Configuration
 
@@ -123,6 +198,7 @@ The Django settings read these environment variables:
 | `DATABASE_HOST` | PostgreSQL hostname (defaults to `db`) |
 | `DATABASE_PORT` | PostgreSQL port (defaults to `5432`) |
 | `DJANGO_SECRET_KEY` | Django secret key |
+| `MUSIC_LIBRARY_ROOT` | Read-only music share for the overlap report (defaults to `/mnt/songs`) |
 
 Other runtime configuration:
 

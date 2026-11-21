@@ -65,6 +65,17 @@ class Playback(models.Model):
         managed = False
         db_table = 'playback'
 
+
+class PlaybackCategory(models.Model):
+    playback = models.OneToOneField(
+        Playback, primary_key=True, on_delete=models.CASCADE, related_name="category_snapshot",
+    )
+    category = models.TextField()
+    inferred = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "playback_category"
+
 class Log(models.Model):
     id = models.AutoField(primary_key=True)
 

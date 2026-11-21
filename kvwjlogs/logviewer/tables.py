@@ -41,10 +41,20 @@ def announcement_picker(track):
 class PlaybackTable(tables.Table):
     announcements = tables.Column(empty_values=(), verbose_name="Announcements", exclude_from_export=True, orderable=False)
     category = tables.Column(
-        accessor="trackid__categoryid__category",
+        accessor="playback_category",
         verbose_name="Category",
-        order_by=("trackid__categoryid__category",),
+        order_by=("playback_category",),
+        empty_values=(),
     )
+
+    def render_category(self, record):
+        snapshot = getattr(record, "category_snapshot", None)
+        category = getattr(record, "playback_category", None)
+        if category is None:
+            category = record.trackid.categoryid.category if record.trackid.categoryid_id else ""
+        if snapshot is None or snapshot.inferred:
+            return f"{category or 'Unknown'} (inferred)"
+        return category
     artist = tables.Column(
         accessor="trackid__artistid__display_name",
         verbose_name="Artist",
@@ -164,11 +174,20 @@ class TracksTable(tables.Table):
             query = urlencode({"next": self.request.get_full_path()})
             url = f"{url}?{query}"
 
+        if not record.filename:
+            return format_html('<a href="{}">{}</a> <small>No song filename</small>', url, record.display_name or "-")
         return format_html(
-            '<a href="{}">{}</a>',
-            url,
-            record.display_name or "-",
+            '<div class="track-player"><a href="{}">{}</a> '
+            '<button type="button" class="btn btn-light btn-sm" data-audio-url="{}" '
+            'aria-label="Listen to {}" onclick="playLibraryTrack(this)">Play song</button>'
+            '<audio controls preload="none" hidden aria-label="Song audio"></audio>'
+            '<span role="status" class="text-danger"></span></div>',
+            url, record.display_name or "-", reverse("track-audio", args=[record.pk]),
+            record.display_name or "track",
         )
+
+    def value_track_name(self, record):
+        return record.display_name or "-"
 
 
     year = tables.Column(
